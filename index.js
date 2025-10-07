@@ -23,7 +23,7 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-const {DATABASE}=process.env; 
+const {DATABASE, PORT}=process.env; 
 console.log(DATABASE)
 
 mongoose.connect(DATABASE)
@@ -342,4 +342,4 @@ app.delete("/admin/messages", async (req, res) => {
 });
 
 // ==================== START SERVER ====================
-httpServer.listen(3001, () => console.log("🚀 Server running on http://localhost:3001"));
+httpServer.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
