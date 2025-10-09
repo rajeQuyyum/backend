@@ -3,7 +3,7 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 const { createServer } = require("http");
 const { Server } = require("socket.io");
-require('dotenv').config()
+require("dotenv").config();
 
 const EmployeeeModel = require("./models/Employee");
 const AdminModel = require("./models/Admin");
@@ -15,7 +15,7 @@ const MessageSchema = new mongoose.Schema({
   email: { type: String, required: true },
   sender: { type: String, enum: ["user", "admin"], required: true },
   text: { type: String, required: true },
-  createdAt: { type: Date, default: Date.now }
+  createdAt: { type: Date, default: Date.now },
 });
 const MessageModel = mongoose.model("Message", MessageSchema);
 
@@ -23,33 +23,26 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-const {DATABASE, PORT}=process.env; 
-console.log(DATABASE)
+const { DATABASE, PORT } = process.env;
+mongoose.connect(DATABASE);
 
-mongoose.connect(DATABASE)
-// .then(()=>console.log('Database connected'))
-// .error(err => console.log(error.message))
-
-// ================= SOCKET.IO SETUP =================
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
-  cors: { origin: "*" }
+  cors: { origin: "*" },
 });
 
 io.on("connection", (socket) => {
   console.log("✅ Client connected");
 
-  // join a room by email
   socket.on("join", (email) => {
     socket.join(email);
     console.log(`📩 ${email} joined chat`);
   });
 
-  // handle sending messages
   socket.on("sendMessage", async ({ email, sender, text }) => {
     if (!email || !text) return;
     const message = await MessageModel.create({ email, sender, text });
-    io.to(email).emit("newMessage", message); // real-time send to room
+    io.to(email).emit("newMessage", message);
   });
 
   socket.on("disconnect", () => {
@@ -59,13 +52,20 @@ io.on("connection", (socket) => {
 
 // ==================== AUTH & USER MANAGEMENT ====================
 
-// --- Employee login/register ---
 app.post("/login", async (req, res) => {
   const { email, password } = req.body;
   const user = await EmployeeeModel.findOne({ email });
   if (!user) return res.json("User not found");
   if (user.password !== password) return res.json("Incorrect password");
-  res.json({ status: "success", user: { id: user._id, name: user.name, email: user.email, balance: user.balance } });
+  res.json({
+    status: "success",
+    user: {
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      balance: user.balance,
+    },
+  });
 });
 
 app.post("/register", async (req, res) => {
@@ -77,13 +77,15 @@ app.post("/register", async (req, res) => {
   }
 });
 
-// --- Admin login and users ---
 app.post("/admin/login", async (req, res) => {
   const { username, password } = req.body;
   const admin = await AdminModel.findOne({ username });
   if (!admin) return res.json("Admin not found");
   if (admin.password !== password) return res.json("Incorrect password");
-  res.json({ status: "success", admin: { id: admin._id, username: admin.username } });
+  res.json({
+    status: "success",
+    admin: { id: admin._id, username: admin.username },
+  });
 });
 
 app.get("/admin/users", async (req, res) => {
@@ -98,8 +100,15 @@ app.get("/admin/users", async (req, res) => {
 app.put("/admin/user/:id/balance", async (req, res) => {
   try {
     const { balance } = req.body;
-    const user = await EmployeeeModel.findByIdAndUpdate(req.params.id, { balance }, { new: true });
+    const user = await EmployeeeModel.findByIdAndUpdate(
+      req.params.id,
+      { balance },
+      { new: true }
+    );
     res.json(user);
+
+    // ⚡ NEW: Notify user of balance update
+    io.to(user.email).emit("balanceUpdated", { balance: user.balance });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -118,7 +127,9 @@ app.get("/user/:id/balance", async (req, res) => {
 
 app.get("/user/:id/transactions", async (req, res) => {
   try {
-    const txs = await TransactionModel.find({ userId: req.params.id }).sort({ date: -1 });
+    const txs = await TransactionModel.find({ userId: req.params.id }).sort({
+      date: -1,
+    });
     res.json(txs);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -128,8 +139,15 @@ app.get("/user/:id/transactions", async (req, res) => {
 // Add transaction
 app.post("/admin/user/:id/transaction", async (req, res) => {
   try {
-    const { type, amount, description, recipientName, counterpartyAccount } = req.body;
-    if (!type || !amount) return res.status(400).json({ error: "Type and amount are required" });
+    const {
+      type,
+      amount,
+      description,
+      recipientName,
+      counterpartyAccount,
+    } = req.body;
+    if (!type || !amount)
+      return res.status(400).json({ error: "Type and amount are required" });
 
     const tx = await TransactionModel.create({
       userId: req.params.id,
@@ -137,16 +155,21 @@ app.post("/admin/user/:id/transaction", async (req, res) => {
       amount,
       description,
       recipientName,
-      counterpartyAccount
+      counterpartyAccount,
     });
 
     const user = await EmployeeeModel.findById(req.params.id);
     if (!user) return res.status(404).json({ error: "User not found" });
 
-    user.balance = type === "credit" ? user.balance + amount : user.balance - amount;
+    user.balance =
+      type === "credit" ? user.balance + amount : user.balance - amount;
     await user.save();
 
     res.json(tx);
+
+    // ⚡ NEW: Emit real-time updates
+    io.to(user.email).emit("transactionAdded", tx);
+    io.to(user.email).emit("balanceUpdated", { balance: user.balance });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -155,7 +178,8 @@ app.post("/admin/user/:id/transaction", async (req, res) => {
 // Update transaction
 app.put("/admin/transaction/:id", async (req, res) => {
   try {
-    const { type, amount, description, recipientName, counterpartyAccount } = req.body;
+    const { type, amount, description, recipientName, counterpartyAccount } =
+      req.body;
     const tx = await TransactionModel.findById(req.params.id);
     if (!tx) return res.status(404).json({ error: "Transaction not found" });
 
@@ -181,6 +205,10 @@ app.put("/admin/transaction/:id", async (req, res) => {
     await user.save();
 
     res.json(tx);
+
+    // ⚡ NEW: Notify user
+    io.to(user.email).emit("transactionUpdated", tx);
+    io.to(user.email).emit("balanceUpdated", { balance: user.balance });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -201,6 +229,10 @@ app.delete("/admin/transaction/:id", async (req, res) => {
     await user.save();
 
     res.json({ message: "Transaction deleted successfully" });
+
+    // ⚡ NEW: Notify user
+    io.to(user.email).emit("transactionDeleted", tx._id);
+    io.to(user.email).emit("balanceUpdated", { balance: user.balance });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -215,6 +247,9 @@ app.delete("/admin/user/:id", async (req, res) => {
 
     await TransactionModel.deleteMany({ userId: req.params.id });
     res.json({ message: "User deleted successfully" });
+
+    // ⚡ Notify deletion if needed
+    io.to(user.email).emit("accountDeleted");
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -246,7 +281,13 @@ app.post("/admin/users/delete-multiple", async (req, res) => {
 app.post("/user/:id/cards", async (req, res) => {
   try {
     const { type, holder, number, expiry } = req.body;
-    const card = await CardModel.create({ userId: req.params.id, type, holder, number, expiry });
+    const card = await CardModel.create({
+      userId: req.params.id,
+      type,
+      holder,
+      number,
+      expiry,
+    });
     res.json(card);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -264,7 +305,10 @@ app.get("/user/:id/cards", async (req, res) => {
 
 app.delete("/user/:userId/cards/:cardId", async (req, res) => {
   try {
-    await CardModel.findOneAndDelete({ _id: req.params.cardId, userId: req.params.userId });
+    await CardModel.findOneAndDelete({
+      _id: req.params.cardId,
+      userId: req.params.userId,
+    });
     res.json({ message: "Card deleted successfully" });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -290,11 +334,13 @@ app.delete("/admin/cards/:cardId", async (req, res) => {
   }
 });
 
-// ==================== CHAT SYSTEM (REST FALLBACK) ====================
+// ==================== CHAT SYSTEM ====================
 
 app.get("/user/messages/:email", async (req, res) => {
   try {
-    const messages = await MessageModel.find({ email: req.params.email }).sort({ createdAt: 1 });
+    const messages = await MessageModel.find({ email: req.params.email }).sort({
+      createdAt: 1,
+    });
     res.json(messages);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -312,7 +358,9 @@ app.get("/admin/messages/emails", async (req, res) => {
 
 app.get("/admin/messages/:email", async (req, res) => {
   try {
-    const messages = await MessageModel.find({ email: req.params.email }).sort({ createdAt: 1 });
+    const messages = await MessageModel.find({ email: req.params.email }).sort({
+      createdAt: 1,
+    });
     res.json(messages);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -342,4 +390,6 @@ app.delete("/admin/messages", async (req, res) => {
 });
 
 // ==================== START SERVER ====================
-httpServer.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
+httpServer.listen(PORT, () =>
+  console.log(`🚀 Server running on http://localhost:${PORT}`)
+);
