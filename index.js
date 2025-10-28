@@ -136,6 +136,32 @@ app.get("/user/:id/transactions", async (req, res) => {
   }
 });
 
+
+// Delete transaction
+app.delete("/admin/transaction/:id", async (req, res) => {
+  try {
+    const tx = await TransactionModel.findByIdAndDelete(req.params.id);
+    if (!tx) return res.status(404).json({ error: "Transaction not found" });
+
+    const user = await EmployeeeModel.findById(tx.userId);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    if (tx.type === "credit") user.balance -= tx.amount;
+    if (tx.type === "debit") user.balance += tx.amount;
+
+    await user.save();
+
+    res.json({ message: "Transaction deleted successfully" });
+
+    // ⚡ NEW: Notify user
+    io.to(user.email).emit("transactionDeleted", tx._id);
+    io.to(user.email).emit("balanceUpdated", { balance: user.balance });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 // Add transaction
 app.post("/admin/user/:id/transaction", async (req, res) => {
   try {
@@ -388,6 +414,159 @@ app.delete("/admin/messages", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+
+
+
+// ==================== NOTIFICATIONS ====================
+const NotificationSchema = new mongoose.Schema({
+  title: { type: String, required: true },
+  message: { type: String, required: true },
+  userEmail: { type: String, required: false }, // null means "all users"
+  createdAt: { type: Date, default: Date.now },
+});
+const NotificationModel = mongoose.model("Notification", NotificationSchema);
+
+// 🔹 Create a new notification
+app.post("/admin/notifications", async (req, res) => {
+  try {
+    const { title, message, userEmail } = req.body;
+    const notification = await NotificationModel.create({ title, message, userEmail });
+
+    // If targeted, notify specific user; else broadcast to all
+    if (userEmail) {
+      io.to(userEmail).emit("newNotification", notification);
+    } else {
+      io.emit("newNotification", notification);
+    }
+
+    res.json(notification);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 🔹 Get all notifications (admin)
+app.get("/admin/notifications", async (req, res) => {
+  try {
+    const notifications = await NotificationModel.find().sort({ createdAt: -1 });
+    res.json(notifications);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 🔹 Get notifications for a specific user
+app.get("/user/:email/notifications", async (req, res) => {
+  try {
+    const { email } = req.params;
+    const notifications = await NotificationModel.find({
+      $or: [{ userEmail: email }, { userEmail: { $exists: false } }, { userEmail: null }],
+    }).sort({ createdAt: -1 });
+    res.json(notifications);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 🔹 Update a notification
+app.put("/admin/notifications/:id", async (req, res) => {
+  try {
+    const { title, message } = req.body;
+    const notification = await NotificationModel.findByIdAndUpdate(
+      req.params.id,
+      { title, message },
+      { new: true }
+    );
+    if (!notification) return res.status(404).json({ error: "Notification not found" });
+
+    io.emit("notificationUpdated", notification);
+    res.json(notification);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 🔹 Delete a notification
+app.delete("/admin/notifications/:id", async (req, res) => {
+  try {
+    const notification = await NotificationModel.findByIdAndDelete(req.params.id);
+    if (!notification) return res.status(404).json({ error: "Notification not found" });
+
+    io.emit("notificationDeleted", req.params.id);
+    res.json({ success: true, message: "Notification deleted successfully" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+
+// ==================== ADDITIONAL INFO MODEL ====================
+const AdditionalInfoSchema = new mongoose.Schema({
+  accountNumber: { type: String, required: true }, // user's MongoDB _id
+  name: { type: String, required: true },
+  email: { type: String, required: true },
+  phone: { type: String },
+  address: { type: String },
+  gender: { type: String },
+});
+
+const AdditionalInfoModel = mongoose.model("AdditionalInfo", AdditionalInfoSchema);
+
+// ==================== ADDITIONAL INFO ROUTES ====================
+
+// Fetch additional info for a user
+app.get("/user/:id/additional-info", async (req, res) => {
+  try {
+    const info = await AdditionalInfoModel.findOne({ accountNumber: req.params.id });
+    res.json(info || {}); // return empty object if none
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Save or update additional info
+app.post("/user/:id/additional-info", async (req, res) => {
+  try {
+    const { phone, address, gender } = req.body;
+
+    // Find user from EmployeeeModel
+    const user = await EmployeeeModel.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    // Check if additional info already exists
+    let info = await AdditionalInfoModel.findOne({ accountNumber: user._id });
+    if (info) {
+      // Update existing info
+      info.phone = phone;
+      info.address = address;
+      info.gender = gender;
+      await info.save();
+    } else {
+      // Create new info
+      info = await AdditionalInfoModel.create({
+        accountNumber: user._id,
+        name: user.name,
+        email: user.email,
+        phone,
+        address,
+        gender,
+      });
+    }
+
+    res.json(info);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+
 
 // ==================== START SERVER ====================
 httpServer.listen(PORT, () =>
