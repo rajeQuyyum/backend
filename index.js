@@ -511,6 +511,10 @@ const AdditionalInfoSchema = new mongoose.Schema({
   phone: { type: String },
   address: { type: String },
   gender: { type: String },
+   nextOfKinGender: { type: String },
+  nextOfKin: { type: String },
+  nextOfKinNumber: { type: String },
+  nextOfKinAddress: { type: String },
 });
 
 const AdditionalInfoModel = mongoose.model("AdditionalInfo", AdditionalInfoSchema);
@@ -531,7 +535,7 @@ app.get("/user/:id/additional-info", async (req, res) => {
 // Save or update additional info
 app.post("/user/:id/additional-info", async (req, res) => {
   try {
-    const { phone, address, gender } = req.body;
+    const { phone, address, gender, nextOfKinGender, nextOfKin, nextOfKinNumber, nextOfKinAddress } = req.body;
 
     // Find user from EmployeeeModel
     const user = await EmployeeeModel.findById(req.params.id);
@@ -544,6 +548,10 @@ app.post("/user/:id/additional-info", async (req, res) => {
       info.phone = phone;
       info.address = address;
       info.gender = gender;
+      info.nextOfKinGender = nextOfKinGender;
+      info.nextOfKin = nextOfKin;
+      info.nextOfKinNumber = nextOfKinNumber;
+      info.nextOfKinAddress = nextOfKinAddress;
       await info.save();
     } else {
       // Create new info
@@ -554,6 +562,10 @@ app.post("/user/:id/additional-info", async (req, res) => {
         phone,
         address,
         gender,
+        nextOfKinGender,
+        nextOfKin,
+        nextOfKinNumber,
+        nextOfKinAddress,
       });
     }
 
