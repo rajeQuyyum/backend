@@ -204,8 +204,15 @@ app.post("/admin/user/:id/transaction", async (req, res) => {
 // Update transaction
 app.put("/admin/transaction/:id", async (req, res) => {
   try {
-    const { type, amount, description, recipientName, counterpartyAccount } =
-      req.body;
+    const {
+      type,
+      amount,
+      description,
+      recipientName,
+      counterpartyAccount,
+      date, // ✅ ADD THIS
+    } = req.body;
+
     const tx = await TransactionModel.findById(req.params.id);
     if (!tx) return res.status(404).json({ error: "Transaction not found" });
 
@@ -217,6 +224,8 @@ app.put("/admin/transaction/:id", async (req, res) => {
     tx.description = description || tx.description;
     tx.recipientName = recipientName || tx.recipientName;
     tx.counterpartyAccount = counterpartyAccount || tx.counterpartyAccount;
+
+    if (date) tx.date = new Date(date); // ✅ ADD THIS
 
     await tx.save();
 
@@ -232,7 +241,7 @@ app.put("/admin/transaction/:id", async (req, res) => {
 
     res.json(tx);
 
-    // ⚡ NEW: Notify user
+    // ⚡ Notify user
     io.to(user.email).emit("transactionUpdated", tx);
     io.to(user.email).emit("balanceUpdated", { balance: user.balance });
   } catch (err) {
@@ -424,6 +433,7 @@ const NotificationSchema = new mongoose.Schema({
   message: { type: String, required: true },
   userEmail: { type: String, required: false }, // null means "all users"
   createdAt: { type: Date, default: Date.now },
+  date: { type: Date, default: Date.now }, // ✅ ADD THIS (editable date/time)
 });
 const NotificationModel = mongoose.model("Notification", NotificationSchema);
 
@@ -472,20 +482,23 @@ app.get("/user/:email/notifications", async (req, res) => {
 // 🔹 Update a notification
 app.put("/admin/notifications/:id", async (req, res) => {
   try {
-    const { title, message } = req.body;
+    const { title, message, date } = req.body;
+
+    const updateData = { title, message };
+    if (date) updateData.date = new Date(date); // ✅ REQUIRED
+
     const notification = await NotificationModel.findByIdAndUpdate(
       req.params.id,
-      { title, message },
+      updateData,
       { new: true }
     );
-    if (!notification) return res.status(404).json({ error: "Notification not found" });
 
-    io.emit("notificationUpdated", notification);
     res.json(notification);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // 🔹 Delete a notification
 app.delete("/admin/notifications/:id", async (req, res) => {
