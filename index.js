@@ -4,11 +4,14 @@ const cors = require("cors");
 const { createServer } = require("http");
 const { Server } = require("socket.io");
 require("dotenv").config();
+const { cloudinary, upload } = require("./config/cloudinary");
 
 const EmployeeeModel = require("./models/Employee");
 const AdminModel = require("./models/Admin");
 const TransactionModel = require("./models/Transaction");
 const CardModel = require("./models/Card");
+const UserProfileImage = require("./models/UserProfileImage");
+
 
 // --- Chat model ---
 const MessageSchema = new mongoose.Schema({
@@ -20,8 +23,11 @@ const MessageSchema = new mongoose.Schema({
 const MessageModel = mongoose.model("Message", MessageSchema);
 
 const app = express();
-app.use(express.json());
+
+app.use(express.json()); // handles JSON bodies
+app.use(express.urlencoded({ extended: true })); // handles form-data / multipart
 app.use(cors());
+
 
 const { DATABASE, PORT } = process.env;
 mongoose.connect(DATABASE);
@@ -588,6 +594,49 @@ app.post("/user/:id/additional-info", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+
+app.post(
+  "/admin/user/:id/profile-image",
+  upload.single("image"),
+  async (req, res) => {
+    try {
+      const user = await EmployeeeModel.findById(req.params.id);
+      if (!user) return res.status(404).json({ error: "User not found" });
+
+      let img = await UserProfileImage.findOne({ userId: user._id });
+
+      if (img) {
+        await cloudinary.uploader.destroy(img.publicId);
+        img.imageUrl = req.file.path;
+        img.publicId = req.file.filename;
+        await img.save();
+      } else {
+        img = await UserProfileImage.create({
+          userId: user._id,
+          imageUrl: req.file.path,
+          publicId: req.file.filename,
+        });
+      }
+
+      io.to(user.email).emit("profileImageUpdated", img.imageUrl);
+      res.json(img);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+
+app.get("/user/:id/profile-image", async (req, res) => {
+  try {
+    const img = await UserProfileImage.findOne({ userId: req.params.id });
+    res.json(img || null);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 
 
