@@ -534,6 +534,14 @@ const AdditionalInfoSchema = new mongoose.Schema({
   nextOfKin: { type: String },
   nextOfKinNumber: { type: String },
   nextOfKinAddress: { type: String },
+
+  // 🆕 ID CARD
+  // 🆕 ID CARD (FRONT & BACK)
+  idCardFrontUrl: { type: String },
+  idCardFrontPublicId: { type: String },
+
+  idCardBackUrl: { type: String },
+  idCardBackPublicId: { type: String },
 });
 
 const AdditionalInfoModel = mongoose.model("AdditionalInfo", AdditionalInfoSchema);
@@ -594,6 +602,120 @@ app.post("/user/:id/additional-info", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+
+app.post(
+  "/user/:id/id-card",
+  upload.fields([
+    { name: "idCardFront", maxCount: 1 },
+    { name: "idCardBack", maxCount: 1 },
+  ]),
+  async (req, res) => {
+    try {
+      const user = await EmployeeeModel.findById(req.params.id);
+      if (!user) return res.status(404).json({ error: "User not found" });
+
+      let info = await AdditionalInfoModel.findOne({ accountNumber: user._id });
+      if (!info) return res.status(404).json({ error: "Info not found" });
+
+      // FRONT
+      if (req.files?.idCardFront?.[0]) {
+        info.idCardFrontUrl = req.files.idCardFront[0].path;
+        info.idCardFrontPublicId = req.files.idCardFront[0].filename;
+      }
+
+      // BACK
+      if (req.files?.idCardBack?.[0]) {
+        info.idCardBackUrl = req.files.idCardBack[0].path;
+        info.idCardBackPublicId = req.files.idCardBack[0].filename;
+      }
+
+      await info.save();
+
+      res.json({
+        idCardFrontUrl: info.idCardFrontUrl,
+        idCardBackUrl: info.idCardBackUrl,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+
+
+app.get("/admin/users/id-cards", async (req, res) => {
+  try {
+    const users = await EmployeeeModel.find();
+
+    const result = await Promise.all(
+      users.map(async (user) => {
+        const info = await AdditionalInfoModel.findOne({
+          accountNumber: user._id,
+        });
+
+        return {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+
+          // ✅ FRONT & BACK ID CARDS
+          idCardFrontUrl: info?.idCardFrontUrl || null,
+          idCardBackUrl: info?.idCardBackUrl || null,
+
+          // ✅ OTHER INFO
+          phone: info?.phone || "",
+          address: info?.address || "",
+          gender: info?.gender || "",
+          nextOfKin: info?.nextOfKin || "",
+          nextOfKinNumber: info?.nextOfKinNumber || "",
+          nextOfKinAddress: info?.nextOfKinAddress || "",
+          nextOfKinGender: info?.nextOfKinGender || "",
+        };
+      })
+    );
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+app.delete("/admin/user/:id/id-card", async (req, res) => {
+  try {
+    const info = await AdditionalInfoModel.findOne({
+      accountNumber: req.params.id,
+    });
+
+    if (!info) {
+      return res.status(404).json({ error: "No ID card found" });
+    }
+
+    // ✅ DELETE FRONT
+    if (info.idCardFrontPublicId) {
+      await cloudinary.uploader.destroy(info.idCardFrontPublicId);
+    }
+
+    // ✅ DELETE BACK
+    if (info.idCardBackPublicId) {
+      await cloudinary.uploader.destroy(info.idCardBackPublicId);
+    }
+
+    info.idCardFrontUrl = null;
+    info.idCardFrontPublicId = null;
+    info.idCardBackUrl = null;
+    info.idCardBackPublicId = null;
+
+    await info.save();
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 
 app.post(
