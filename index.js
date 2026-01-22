@@ -542,6 +542,11 @@ const AdditionalInfoSchema = new mongoose.Schema({
 
   idCardBackUrl: { type: String },
   idCardBackPublicId: { type: String },
+
+  // ================= BANK DETAILS (ADMIN ONLY) =================
+  bankAccountNumber: { type: String, default: null },
+bankTransitNumber: { type: String, default: null },
+bankInstitutionNumber: { type: String, default: null },
 });
 
 const AdditionalInfoModel = mongoose.model("AdditionalInfo", AdditionalInfoSchema);
@@ -551,13 +556,17 @@ const AdditionalInfoModel = mongoose.model("AdditionalInfo", AdditionalInfoSchem
 // Fetch additional info for a user
 app.get("/user/:id/additional-info", async (req, res) => {
   try {
-    const info = await AdditionalInfoModel.findOne({ accountNumber: req.params.id });
-    res.json(info || {}); // return empty object if none
+    const info = await AdditionalInfoModel.findOne({
+      accountNumber: req.params.id,
+    });
+
+    res.json(info || {});
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // Save or update additional info
 app.post("/user/:id/additional-info", async (req, res) => {
@@ -602,6 +611,106 @@ app.post("/user/:id/additional-info", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+
+app.post("/admin/user/:id/bank-details", async (req, res) => {
+  try {
+    const {
+      bankAccountNumber,
+      bankTransitNumber,
+      bankInstitutionNumber,
+    } = req.body;
+
+    // 🔹 Find user first
+    const user = await EmployeeeModel.findById(req.params.id);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // 🔹 Find or create AdditionalInfo
+    let info = await AdditionalInfoModel.findOne({
+      accountNumber: user._id,
+    });
+
+    if (!info) {
+      info = await AdditionalInfoModel.create({
+        accountNumber: user._id,
+        name: user.name,
+        email: user.email,
+      });
+    }
+
+    // 🔹 Save bank details
+    info.bankAccountNumber = bankAccountNumber || null;
+    info.bankTransitNumber = bankTransitNumber || null;
+    info.bankInstitutionNumber = bankInstitutionNumber || null;
+
+    await info.save();
+
+    res.json({ success: true, info });
+  } catch (err) {
+    console.error("BANK DETAILS ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+
+app.delete("/admin/user/:id/bank-details", async (req, res) => {
+  try {
+    const info = await AdditionalInfoModel.findOne({
+      accountNumber: new mongoose.Types.ObjectId(req.params.id),
+    });
+
+    if (!info) {
+      return res.status(404).json({ error: "Additional info not found" });
+    }
+
+    info.bankAccountNumber = null;
+    info.bankTransitNumber = null;
+    info.bankInstitutionNumber = null;
+
+    await info.save();
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("DELETE BANK DETAILS ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.get("/admin/users/bank-details", async (req, res) => {
+  try {
+    const users = await EmployeeeModel.find();
+
+    const result = await Promise.all(
+      users.map(async (user) => {
+        const info = await AdditionalInfoModel.findOne({
+          accountNumber: user._id,
+        });
+
+        return {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+
+          bankAccountNumber: info?.bankAccountNumber || "",
+          bankTransitNumber: info?.bankTransitNumber || "",
+          bankInstitutionNumber: info?.bankInstitutionNumber || "",
+        };
+      })
+    );
+
+    res.json(result);
+  } catch (err) {
+    console.error("BANK GET ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 
 
 app.post(
