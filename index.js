@@ -60,9 +60,20 @@ io.on("connection", (socket) => {
 
 app.post("/login", async (req, res) => {
   const { email, password } = req.body;
+
   const user = await EmployeeeModel.findOne({ email });
   if (!user) return res.json("User not found");
+
+  // 🚫 BLOCK CHECK
+  if (user.isBlocked) {
+    return res.status(403).json({
+      status: "blocked",
+      message: "Your account has been blocked. Please contact support.",
+    });
+  }
+
   if (user.password !== password) return res.json("Incorrect password");
+
   res.json({
     status: "success",
     user: {
@@ -119,6 +130,55 @@ app.put("/admin/user/:id/balance", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+app.put("/admin/user/:id/block", async (req, res) => {
+  try {
+    const user = await EmployeeeModel.findByIdAndUpdate(
+      req.params.id,
+      { isBlocked: true },
+      { new: true }
+    );
+
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    // 🔔 Real-time notify user
+    io.to(user.email).emit("accountBlocked");
+
+    res.json({ success: true, message: "User blocked successfully" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/admin/user/:id/unblock", async (req, res) => {
+  try {
+    const user = await EmployeeeModel.findByIdAndUpdate(
+      req.params.id,
+      { isBlocked: false },
+      { new: true }
+    );
+
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    // 🔔 Real-time notify user
+    io.to(user.email).emit("accountUnblocked");
+
+    res.json({ success: true, message: "User unblocked successfully" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.get("/admin/users", async (req, res) => {
+  try {
+    const users = await EmployeeeModel.find();
+    res.json(users);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 // ==================== TRANSACTIONS ====================
 
