@@ -5,6 +5,9 @@ const EmployeeSchema = new mongoose.Schema({
   password: String,
   balance: { type: Number, default: 0 },
   // ✅ BLOCK FLAG
-  isBlocked: { type: Boolean, default: false }
+  isBlocked: { type: Boolean, default: false },
+  resetToken: String,
+resetTokenExpiry: Date,
+
 });
 module.exports = mongoose.model('Employee', EmployeeSchema);

@@ -929,6 +929,53 @@ app.get("/user/:id/profile-image", async (req, res) => {
 });
 
 
+const crypto = require("crypto");
+
+app.post("/forgot-password", async (req, res) => {
+  const { email } = req.body;
+
+  const user = await EmployeeeModel.findOne({ email });
+  if (!user) {
+    // do NOT expose if user exists
+    return res.json("If email exists, reset link sent");
+  }
+
+  const token = crypto.randomBytes(32).toString("hex");
+
+  user.resetToken = token;
+  user.resetTokenExpiry = Date.now() + 15 * 60 * 1000; // 15 minutes
+  await user.save();
+
+  res.json({
+    resetLink: `${process.env.CLIENT_URL}/reset-password/${token}`,
+
+
+  });
+});
+
+app.post("/reset-password", async (req, res) => {
+  const { token, password } = req.body;
+
+  const user = await EmployeeeModel.findOne({
+    resetToken: token,
+    resetTokenExpiry: { $gt: Date.now() },
+  });
+
+  if (!user) {
+    return res.status(400).json("Invalid or expired token");
+  }
+
+  // 🔑 CHANGE PASSWORD (PLAIN TEXT, SAME AS YOUR SYSTEM)
+  user.password = password;
+  user.resetToken = undefined;
+  user.resetTokenExpiry = undefined;
+
+  await user.save();
+
+  res.json("Password reset successful");
+});
+
+
 
 
 
