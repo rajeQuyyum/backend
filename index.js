@@ -16,11 +16,28 @@ const UserProfileImage = require("./models/UserProfileImage");
 // --- Chat model ---
 const MessageSchema = new mongoose.Schema({
   email: { type: String, required: true },
-  sender: { type: String, enum: ["user", "admin"], required: true },
+
+  sender: {
+    type: String,
+    enum: ["user", "admin"],
+    required: true,
+  },
+
   text: { type: String, required: true },
+
+  // ✅ MESSAGE STATUS
+  status: {
+    type: String,
+    enum: ["sent", "delivered", "seen"],
+    default: "sent",
+  },
+
   createdAt: { type: Date, default: Date.now },
 });
+
 const MessageModel = mongoose.model("Message", MessageSchema);
+
+
 
 const app = express();
 
@@ -45,16 +62,37 @@ io.on("connection", (socket) => {
     console.log(`📩 ${email} joined chat`);
   });
 
+  // ✅ REPLACE THIS PART
   socket.on("sendMessage", async ({ email, sender, text }) => {
     if (!email || !text) return;
-    const message = await MessageModel.create({ email, sender, text });
+
+    // 1️⃣ Save message as SENT
+    const message = await MessageModel.create({
+      email,
+      sender,
+      text,
+      status: "sent",
+    });
+
+    // 2️⃣ Emit message (DELIVERY)
     io.to(email).emit("newMessage", message);
+
+    // 3️⃣ Mark as DELIVERED
+    await MessageModel.findByIdAndUpdate(message._id, {
+      status: "delivered",
+    });
+
+    io.to(email).emit("messageStatusUpdated", {
+      messageId: message._id,
+      status: "delivered",
+    });
   });
 
   socket.on("disconnect", () => {
     console.log("❌ Client disconnected");
   });
 });
+
 
 // ==================== AUTH & USER MANAGEMENT ====================
 
@@ -489,6 +527,26 @@ app.delete("/admin/messages", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+app.put("/user/messages/seen/:email", async (req, res) => {
+  try {
+    await MessageModel.updateMany(
+      {
+        email: req.params.email,
+        sender: "admin",
+        status: { $ne: "seen" },
+      },
+      { status: "seen" }
+    );
+
+    io.to(req.params.email).emit("adminMessagesSeen");
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 
 
