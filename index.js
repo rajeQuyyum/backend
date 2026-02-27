@@ -486,10 +486,42 @@ app.get("/user/messages/:email", async (req, res) => {
   }
 });
 
+app.get("/user/profile/:email", async (req, res) => {
+  try {
+    const user = await EmployeeeModel.findOne(
+      { email: req.params.email },
+      { name: 1, email: 1, _id: 0 }
+    );
+
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/admin/messages/emails", async (req, res) => {
   try {
-    const emails = await MessageModel.distinct("email");
-    res.json(emails);
+    const users = await EmployeeeModel.find({}, { email: 1, _id: 0 }).sort({ email: 1 });
+    res.json(users.map((u) => u.email));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/admin/messages/users", async (req, res) => {
+  try {
+    const users = await EmployeeeModel.find({}, { email: 1, name: 1, _id: 0 }).lean();
+    const chattedEmails = await MessageModel.distinct("email");
+
+    const result = users.map((u) => ({
+      email: u.email,
+      name: u.name,
+      hasMessages: chattedEmails.includes(u.email),
+    }));
+
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
