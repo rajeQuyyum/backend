@@ -62,31 +62,42 @@ io.on("connection", (socket) => {
     console.log(`📩 ${email} joined chat`);
   });
 
+  socket.on("joinAdmin", () => {
+  socket.join("admins");
+  console.log("👑 Admin joined admins room");
+});
+
   // ✅ REPLACE THIS PART
   socket.on("sendMessage", async ({ email, sender, text }) => {
-    if (!email || !text) return;
+  if (!email || !text) return;
 
-    // 1️⃣ Save message as SENT
-    const message = await MessageModel.create({
-      email,
-      sender,
-      text,
-      status: "sent",
-    });
-
-    // 2️⃣ Emit message (DELIVERY)
-    io.to(email).emit("newMessage", message);
-
-    // 3️⃣ Mark as DELIVERED
-    await MessageModel.findByIdAndUpdate(message._id, {
-      status: "delivered",
-    });
-
-    io.to(email).emit("messageStatusUpdated", {
-      messageId: message._id,
-      status: "delivered",
-    });
+  const message = await MessageModel.create({
+    email,
+    sender,
+    text,
+    status: "sent",
   });
+
+  // ✅ send to the user's room (user gets it)
+  io.to(email).emit("newMessage", message);
+
+  // ✅ also send to admins room (admin gets it even if not viewing that chat)
+  io.to("admins").emit("newMessage", message);
+
+  await MessageModel.findByIdAndUpdate(message._id, { status: "delivered" });
+
+  // delivery update for user
+  io.to(email).emit("messageStatusUpdated", {
+    messageId: message._id,
+    status: "delivered",
+  });
+
+  // optional: delivery update for admin too
+  io.to("admins").emit("messageStatusUpdated", {
+    messageId: message._id,
+    status: "delivered",
+  });
+});
 
   socket.on("disconnect", () => {
     console.log("❌ Client disconnected");
