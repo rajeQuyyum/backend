@@ -51,7 +51,10 @@ mongoose.connect(DATABASE);
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
-  cors: { origin: "*" },
+  cors: {
+    origin: true,   // allow real production origin automatically
+    methods: ["GET", "POST"],
+  },
 });
 
 io.on("connection", (socket) => {
