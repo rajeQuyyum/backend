@@ -46,6 +46,22 @@ app.use(express.urlencoded({ extended: true })); // handles form-data / multipar
 app.use(cors());
 
 
+const freezeGuardByUserId = async (req, res, next) => {
+  const user = await EmployeeeModel.findById(req.params.id);
+  if (!user) return res.status(404).json({ error: "User not found" });
+
+  if (user.isFrozen) {
+    return res.status(423).json({
+      status: "frozen",
+      message: "Account is frozen. Contact customer care.",
+    });
+  }
+
+  req.userDoc = user;
+  next();
+};
+
+
 const { DATABASE, PORT } = process.env;
 mongoose.connect(DATABASE);
 
@@ -133,6 +149,7 @@ app.post("/login", async (req, res) => {
       name: user.name,
       email: user.email,
       balance: user.balance,
+      isFrozen: user.isFrozen, // ✅ ADD THIS
     },
   });
 });
@@ -221,6 +238,40 @@ app.put("/admin/user/:id/unblock", async (req, res) => {
   }
 });
 
+app.put("/admin/user/:id/freeze", async (req, res) => {
+  try {
+    const user = await EmployeeeModel.findByIdAndUpdate(
+      req.params.id,
+      { isFrozen: true },
+      { new: true }
+    );
+
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    io.to(user.email).emit("accountFrozen"); // optional real-time
+    res.json({ success: true, message: "User account frozen" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/admin/user/:id/unfreeze", async (req, res) => {
+  try {
+    const user = await EmployeeeModel.findByIdAndUpdate(
+      req.params.id,
+      { isFrozen: false },
+      { new: true }
+    );
+
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    io.to(user.email).emit("accountUnfrozen"); // optional real-time
+    res.json({ success: true, message: "User account unfrozen" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 app.get("/admin/users", async (req, res) => {
   try {
@@ -234,16 +285,11 @@ app.get("/admin/users", async (req, res) => {
 
 // ==================== TRANSACTIONS ====================
 
-app.get("/user/:id/balance", async (req, res) => {
-  try {
-    const user = await EmployeeeModel.findById(req.params.id);
-    res.json({ balance: user.balance });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+app.get("/user/:id/balance", freezeGuardByUserId, async (req, res) => {
+  res.json({ balance: req.userDoc.balance });
 });
 
-app.get("/user/:id/transactions", async (req, res) => {
+app.get("/user/:id/transactions", freezeGuardByUserId, async (req, res) => {
   try {
     const txs = await TransactionModel.find({ userId: req.params.id }).sort({
       date: -1,
@@ -281,7 +327,7 @@ app.delete("/admin/transaction/:id", async (req, res) => {
 
 
 // Add transaction
-app.post("/admin/user/:id/transaction", async (req, res) => {
+app.post("/admin/user/:id/transaction", freezeGuardByUserId, async (req, res) => {
   try {
     const {
       type,
