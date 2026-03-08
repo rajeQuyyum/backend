@@ -13,6 +13,44 @@ const CardModel = require("./models/Card");
 const UserProfileImage = require("./models/UserProfileImage");
 
 
+
+// ==================== LOANS MODEL ====================
+const LoanSchema = new mongoose.Schema(
+  {
+    email: { type: String, required: true },
+
+    loanType: { type: String, required: true },
+    amount: { type: Number, required: true },
+    durationMonths: { type: Number, required: true },
+    purpose: { type: String, required: true },
+    purposeOther: { type: String, default: "" },
+
+    fullName: { type: String, required: true },
+    phone: { type: String, required: true },
+    country: { type: String, required: true },
+    city: { type: String, default: "" },
+    address: { type: String, default: "" },
+
+    employmentStatus: { type: String, required: true },
+    monthlyIncome: { type: Number, required: true },
+
+    idType: { type: String, required: true },
+    idNumber: { type: String, default: "" },
+
+    status: {
+      type: String,
+      enum: ["pending", "approved", "rejected"],
+      default: "pending",
+    },
+
+    adminNote: { type: String, default: "" },
+  },
+  { timestamps: true }
+);
+
+const LoanModel = mongoose.model("Loan", LoanSchema);
+
+
 // --- Chat model ---
 const MessageSchema = new mongoose.Schema({
   email: { type: String, required: true },
@@ -36,6 +74,19 @@ const MessageSchema = new mongoose.Schema({
 });
 
 const MessageModel = mongoose.model("Message", MessageSchema);
+
+
+
+// ==================== NOTIFICATIONS ====================
+const NotificationSchema = new mongoose.Schema({
+  title: { type: String, required: true },
+  message: { type: String, required: true },
+  userEmail: { type: String, required: false }, // null means "all users"
+  createdAt: { type: Date, default: Date.now },
+  date: { type: Date, default: Date.now }, // ✅ ADD THIS (editable date/time)
+});
+const NotificationModel = mongoose.model("Notification", NotificationSchema);
+
 
 
 
@@ -273,10 +324,69 @@ app.put("/admin/user/:id/unfreeze", async (req, res) => {
 });
 
 
-app.get("/admin/users", async (req, res) => {
+// app.get("/admin/users", async (req, res) => {
+//   try {
+//     const users = await EmployeeeModel.find();
+//     res.json(users);
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//   }
+// });
+
+
+app.put("/admin/user/:id/savings/lock", async (req, res) => {
   try {
-    const users = await EmployeeeModel.find();
-    res.json(users);
+    const user = await EmployeeeModel.findByIdAndUpdate(
+      req.params.id,
+      { isSavingsLocked: true },
+      { new: true }
+    );
+
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    io.to(user.email).emit("savingsLocked");
+    res.json({ success: true, message: "Savings locked", isSavingsLocked: user.isSavingsLocked });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.put("/admin/user/:id/savings/unlock", async (req, res) => {
+  try {
+    const user = await EmployeeeModel.findByIdAndUpdate(
+      req.params.id,
+      { isSavingsLocked: false },
+      { new: true }
+    );
+
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    io.to(user.email).emit("savingsUnlocked");
+    res.json({ success: true, message: "Savings unlocked", isSavingsLocked: user.isSavingsLocked });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.post("/admin/user/:id/savings/unload-all", async (req, res) => {
+  try {
+    const user = await EmployeeeModel.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const s = Number(user.savingsBalance || 0);
+    if (s <= 0) return res.status(400).json({ error: "No savings to unload" });
+
+    user.savingsBalance = 0;
+    user.balance = Number(user.balance || 0) + s;
+
+    await user.save();
+
+    io.to(user.email).emit("balanceUpdated", { balance: user.balance });
+    io.to(user.email).emit("savingsUpdated", { savingsBalance: user.savingsBalance });
+
+    res.json({ success: true, balance: user.balance, savingsBalance: user.savingsBalance });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -643,15 +753,6 @@ app.put("/user/messages/seen/:email", async (req, res) => {
 
 
 
-// ==================== NOTIFICATIONS ====================
-const NotificationSchema = new mongoose.Schema({
-  title: { type: String, required: true },
-  message: { type: String, required: true },
-  userEmail: { type: String, required: false }, // null means "all users"
-  createdAt: { type: Date, default: Date.now },
-  date: { type: Date, default: Date.now }, // ✅ ADD THIS (editable date/time)
-});
-const NotificationModel = mongoose.model("Notification", NotificationSchema);
 
 // 🔹 Create a new notification
 app.post("/admin/notifications", async (req, res) => {
@@ -1125,6 +1226,474 @@ app.post("/reset-password", async (req, res) => {
   res.json("Password reset successful");
 });
 
+
+
+// ==================== LOANS ROUTES ====================
+
+// 1) User applies
+app.post("/loans/apply", async (req, res) => {
+  try {
+    const data = req.body;
+
+    // simple validation (matches your simple form)
+    if (!data.email) return res.status(400).json({ error: "Email required" });
+    if (!data.fullName) return res.status(400).json({ error: "Full name required" });
+    if (!data.phone) return res.status(400).json({ error: "Phone required" });
+    if (!data.country) return res.status(400).json({ error: "Country required" });
+
+    if (!data.loanType) return res.status(400).json({ error: "Loan type required" });
+    if (!data.amount || Number(data.amount) <= 0)
+      return res.status(400).json({ error: "Valid amount required" });
+    if (!data.durationMonths || Number(data.durationMonths) <= 0)
+      return res.status(400).json({ error: "Valid duration required" });
+    if (!data.purpose) return res.status(400).json({ error: "Purpose required" });
+
+    if (!data.employmentStatus)
+      return res.status(400).json({ error: "Employment status required" });
+    if (!data.monthlyIncome || Number(data.monthlyIncome) <= 0)
+      return res.status(400).json({ error: "Monthly income required" });
+
+    if (!data.idType) return res.status(400).json({ error: "ID type required" });
+
+    const loan = await LoanModel.create({
+      ...data,
+      amount: Number(data.amount),
+      durationMonths: Number(data.durationMonths),
+      monthlyIncome: Number(data.monthlyIncome),
+      status: "pending",
+    });
+
+    // notify admins realtime (optional)
+    io.to("admins").emit("newLoanApplication", loan);
+
+    // notify user
+    const n = await NotificationModel.create({
+      title: "Loan Application Submitted",
+      message: `Your loan request is now pending review.`,
+      userEmail: data.email,
+    });
+    io.to(data.email).emit("newNotification", n);
+
+    res.status(201).json({ success: true, loan });
+  } catch (err) {
+    console.error("LOAN APPLY ERROR:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// 2) Admin fetch all loans
+app.get("/admin/loans", async (req, res) => {
+  try {
+    const loans = await LoanModel.find().sort({ createdAt: -1 });
+    res.json(loans);
+  } catch (err) {
+    console.error("ADMIN LOANS ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3) User fetch their loans
+app.get("/user/:email/loans", async (req, res) => {
+  try {
+    const loans = await LoanModel.find({ email: req.params.email }).sort({ createdAt: -1 });
+    res.json(loans);
+  } catch (err) {
+    console.error("USER LOANS ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 4) Admin approve/reject loan
+app.put("/admin/loans/:id/status", async (req, res) => {
+  try {
+    const { status, adminNote } = req.body;
+
+    if (!["approved", "rejected"].includes(status)) {
+      return res.status(400).json({ error: "Status must be approved or rejected" });
+    }
+
+    const loan = await LoanModel.findById(req.params.id);
+    if (!loan) return res.status(404).json({ error: "Loan not found" });
+
+    loan.status = status;
+    loan.adminNote = adminNote || "";
+    await loan.save();
+
+    // realtime notify user
+    io.to(loan.email).emit("loanStatusUpdated", {
+      loanId: loan._id,
+      status: loan.status,
+      adminNote: loan.adminNote,
+    });
+
+    // notification to user
+    const n = await NotificationModel.create({
+      title: status === "approved" ? "Loan Approved" : "Loan Declined",
+      message:
+        status === "approved"
+          ? "Your loan has been approved."
+          : "Your loan has been declined.",
+      userEmail: loan.email,
+    });
+    io.to(loan.email).emit("newNotification", n);
+
+    // optional: notify admins list updated
+    io.to("admins").emit("loanUpdated", loan);
+
+    res.json({ success: true, loan });
+  } catch (err) {
+    console.error("UPDATE LOAN STATUS ERROR:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+
+
+// Move from MAIN -> SAVINGS
+app.post("/user/:id/savings/deposit", freezeGuardByUserId, async (req, res) => {
+  try {
+    const { amount } = req.body;
+    const a = Number(amount);
+
+    if (!a || a <= 0) return res.status(400).json({ error: "Valid amount required" });
+
+    const user = req.userDoc;
+
+    if (user.isSavingsLocked) {
+  return res.status(423).json({ status: "locked", message: "Savings is locked. Contact support." });
+}
+
+    if (user.balance < a) {
+      return res.status(400).json({ error: "Insufficient main balance" });
+    }
+
+    user.balance -= a;
+    user.savingsBalance = (user.savingsBalance || 0) + a;
+
+    await user.save();
+
+    // realtime update (optional)
+    io.to(user.email).emit("balanceUpdated", { balance: user.balance });
+    io.to(user.email).emit("savingsUpdated", { savingsBalance: user.savingsBalance });
+
+    res.json({ success: true, balance: user.balance, savingsBalance: user.savingsBalance });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Move from SAVINGS -> MAIN
+app.post("/user/:id/savings/withdraw", freezeGuardByUserId, async (req, res) => {
+  try {
+    const { amount } = req.body;
+    const a = Number(amount);
+
+    if (!a || a <= 0) return res.status(400).json({ error: "Valid amount required" });
+
+    const user = req.userDoc;
+
+    if (user.isSavingsLocked) {
+  return res.status(423).json({ status: "locked", message: "Savings is locked. Contact support." });
+}
+
+    const s = Number(user.savingsBalance || 0);
+    if (s < a) {
+      return res.status(400).json({ error: "Insufficient savings balance" });
+    }
+
+    user.savingsBalance = s - a;
+    user.balance += a;
+
+    await user.save();
+
+    io.to(user.email).emit("balanceUpdated", { balance: user.balance });
+    io.to(user.email).emit("savingsUpdated", { savingsBalance: user.savingsBalance });
+
+    res.json({ success: true, balance: user.balance, savingsBalance: user.savingsBalance });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get savings balance
+app.get("/user/:id/savings", freezeGuardByUserId, async (req, res) => {
+  res.json({
+    savingsBalance: Number(req.userDoc.savingsBalance || 0),
+    isSavingsLocked: !!req.userDoc.isSavingsLocked,
+  });
+});
+
+const FIXED_RATES = {
+  3: 0.03,   // 3 months = 3%
+  6: 0.055,  // 6 months = 5.5%
+  12: 0.08,  // 12 months = 8%
+};
+
+
+app.post("/user/:id/fixed/create", freezeGuardByUserId, async (req, res) => {
+  try {
+    const { amount, termMonths } = req.body;
+
+    const a = Number(amount);
+    const t = Number(termMonths);
+
+    if (!a || a <= 0) return res.status(400).json({ error: "Valid amount required" });
+    if (!FIXED_RATES[t]) return res.status(400).json({ error: "Invalid term selected" });
+
+    const user = req.userDoc;
+
+    if (user.balance < a) {
+      return res.status(400).json({ error: "Insufficient main balance" });
+    }
+
+    const rate = FIXED_RATES[t];
+    const startDate = new Date();
+    const maturityDate = new Date(startDate);
+    maturityDate.setMonth(maturityDate.getMonth() + t);
+
+    const expectedInterest = a * rate;
+    const totalAtMaturity = a + expectedInterest;
+
+    user.balance -= a;
+
+    user.fixedDeposits.push({
+      amount: a,
+      termMonths: t,
+      rate,
+      startDate,
+      maturityDate,
+      expectedInterest,
+      totalAtMaturity,
+      status: "active",
+    });
+
+    await user.save();
+
+    io.to(user.email).emit("balanceUpdated", { balance: user.balance });
+    io.to(user.email).emit("fixedUpdated", { fixedDeposits: user.fixedDeposits });
+
+    res.json({
+      success: true,
+      balance: user.balance,
+      fixedDeposits: user.fixedDeposits,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.get("/user/:id/fixed", freezeGuardByUserId, async (req, res) => {
+  res.json({
+    fixedDeposits: req.userDoc.fixedDeposits || [],
+  });
+});
+
+
+app.post("/user/:id/fixed/withdraw/:fixedId", freezeGuardByUserId, async (req, res) => {
+  try {
+    const user = req.userDoc;
+
+    const fd = user.fixedDeposits.id(req.params.fixedId);
+    if (!fd) return res.status(404).json({ error: "Fixed deposit not found" });
+
+    if (fd.status !== "active") {
+      return res.status(400).json({ error: "This fixed deposit is not active" });
+    }
+
+    const now = new Date();
+    const matured = now >= new Date(fd.maturityDate);
+
+    let payout = 0;
+
+    if (matured) {
+      payout = Number(fd.totalAtMaturity || 0);
+    } else {
+      if (!fd.earlyWithdrawAllowed) {
+        return res.status(423).json({
+          status: "locked",
+          message: "Fixed deposit not matured yet.",
+        });
+      }
+
+      payout = Number(fd.earlyWithdrawalAmount || 0);
+
+      if (payout <= 0) {
+        return res.status(400).json({ error: "Early withdrawal amount is invalid" });
+      }
+    }
+
+    user.balance = Number(user.balance || 0) + payout;
+    fd.status = "withdrawn";
+    fd.withdrawnAt = new Date();
+
+    await user.save();
+
+    io.to(user.email).emit("balanceUpdated", { balance: user.balance });
+    io.to(user.email).emit("fixedUpdated", { fixedDeposits: user.fixedDeposits });
+
+    res.json({
+      success: true,
+      balance: user.balance,
+      fixedDeposits: user.fixedDeposits,
+      withdrawnAmount: payout,
+      withdrawalType: matured ? "matured" : "early",
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/admin/user/:id/fixed/reset", async (req, res) => {
+  try {
+    const user = await EmployeeeModel.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const fixed = user.fixedDeposits || [];
+
+    // calculate refund (principal only)
+    const refund = fixed.reduce((sum, fd) => sum + Number(fd.amount || 0), 0);
+
+    // return money to main balance
+    user.balance = Number(user.balance || 0) + refund;
+
+    // ❌ DELETE ALL FIXED DEPOSITS
+    user.fixedDeposits = [];
+
+    await user.save();
+
+    // realtime updates
+    io.to(user.email).emit("balanceUpdated", { balance: user.balance });
+    io.to(user.email).emit("fixedUpdated", { fixedDeposits: [] });
+
+    res.json({
+      success: true,
+      message: "All fixed deposits removed by admin",
+      balance: user.balance,
+      fixedDeposits: [],
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.post("/admin/user/:id/fixed/:fixedId/allow-early-withdraw", async (req, res) => {
+  try {
+    const user = await EmployeeeModel.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const fd = user.fixedDeposits.id(req.params.fixedId);
+    if (!fd) return res.status(404).json({ error: "Fixed deposit not found" });
+
+    if (fd.status !== "active") {
+      return res.status(400).json({ error: "Fixed deposit is not active" });
+    }
+
+    const penaltyRate =
+      req.body.penaltyRate !== undefined
+        ? Number(req.body.penaltyRate)
+        : 0.1;
+
+    if (penaltyRate < 0 || penaltyRate > 1) {
+      return res.status(400).json({ error: "Penalty rate must be between 0 and 1" });
+    }
+
+    const penaltyAmount = Number(fd.amount || 0) * penaltyRate;
+    const earlyWithdrawalAmount = Number(fd.amount || 0) - penaltyAmount;
+
+    fd.earlyWithdrawAllowed = true;
+    fd.earlyWithdrawalPenaltyRate = penaltyRate;
+    fd.earlyWithdrawalAmount = earlyWithdrawalAmount;
+
+    await user.save();
+
+    io.to(user.email).emit("fixedUpdated", { fixedDeposits: user.fixedDeposits });
+
+    res.json({
+      success: true,
+      message: "Early withdrawal enabled successfully",
+      fixedDeposit: fd,
+    });
+  } catch (err) {
+    console.error("ALLOW EARLY WITHDRAW ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.get("/admin/users/fixed-deposits", async (req, res) => {
+  try {
+    const users = await EmployeeeModel.find().lean();
+
+    const result = users.map((user) => {
+      const fixedDeposits = (user.fixedDeposits || []).map((fd) => ({
+        _id: fd._id,
+        amount: Number(fd.amount || 0),
+        termMonths: Number(fd.termMonths || 0),
+        rate: Number(fd.rate || 0),
+        startDate: fd.startDate,
+        maturityDate: fd.maturityDate,
+        expectedInterest: Number(fd.expectedInterest || 0),
+        totalAtMaturity: Number(fd.totalAtMaturity || 0),
+        status: fd.status,
+      }));
+
+      const totalLocked = fixedDeposits
+        .filter((fd) => fd.status === "active")
+        .reduce((sum, fd) => sum + fd.amount, 0);
+
+      const totalInterest = fixedDeposits
+        .filter((fd) => fd.status === "active")
+        .reduce((sum, fd) => sum + fd.expectedInterest, 0);
+
+      return {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        totalLocked,
+        totalInterest,
+        fixedDeposits,
+      };
+    });
+
+    res.json(result);
+  } catch (err) {
+    console.error("ADMIN FIXED DEPOSITS ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.delete("/admin/user/:id/fixed/:fixedId", async (req, res) => {
+  try {
+    const user = await EmployeeeModel.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const fd = user.fixedDeposits.id(req.params.fixedId);
+    if (!fd) return res.status(404).json({ error: "Fixed deposit not found" });
+
+    if (fd.status !== "withdrawn") {
+      return res.status(400).json({
+        error: "Only withdrawn fixed deposits can be deleted",
+      });
+    }
+
+    fd.deleteOne();
+    await user.save();
+
+    io.to(user.email).emit("fixedUpdated", { fixedDeposits: user.fixedDeposits });
+
+    res.json({
+      success: true,
+      message: "Withdrawn fixed deposit deleted successfully",
+      fixedDeposits: user.fixedDeposits,
+    });
+  } catch (err) {
+    console.error("DELETE WITHDRAWN FIXED ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 
 
