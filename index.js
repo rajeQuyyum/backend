@@ -201,6 +201,7 @@ app.post("/login", async (req, res) => {
       email: user.email,
       balance: user.balance,
       isFrozen: user.isFrozen, // ✅ ADD THIS
+       currency: user.currency, // ✅ add this
     },
   });
 });
@@ -387,6 +388,32 @@ app.post("/admin/user/:id/savings/unload-all", async (req, res) => {
     io.to(user.email).emit("savingsUpdated", { savingsBalance: user.savingsBalance });
 
     res.json({ success: true, balance: user.balance, savingsBalance: user.savingsBalance });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.put("/admin/user/:id/currency", async (req, res) => {
+  try {
+    const { currency } = req.body;
+
+    const allowedCurrencies = ["$", "€", "£", "¥", "₹", "C$"];
+    if (!allowedCurrencies.includes(currency)) {
+      return res.status(400).json({ error: "Invalid currency" });
+    }
+
+    const user = await EmployeeeModel.findByIdAndUpdate(
+      req.params.id,
+      { currency },
+      { new: true }
+    );
+
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    io.to(user.email).emit("currencyUpdated", { currency: user.currency });
+
+    res.json(user);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

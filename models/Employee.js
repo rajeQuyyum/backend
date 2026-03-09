@@ -32,6 +32,13 @@ const EmployeeSchema = new mongoose.Schema({
   isBlocked: { type: Boolean, default: false },
   isFrozen: { type: Boolean, default: false },
 
+  currency: {
+    type: String,
+    enum: ["$", "€", "£", "¥", "₹", "C$"],
+    default: "$",
+  },
+
+
   savingsBalance: { type: Number, default: 0 },
   isSavingsLocked: { type: Boolean, default: false },
 
