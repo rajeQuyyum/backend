@@ -14,14 +14,25 @@ const UserProfileImage = require("./models/UserProfileImage");
 
 
 
-// ==================== LOANS MODEL ====================
+
+/// ==================== LOANS MODEL ====================
 const LoanSchema = new mongoose.Schema(
   {
     email: { type: String, required: true },
 
     loanType: { type: String, required: true },
+
+    // ✅ ADD THIS
+    currency: {
+      type: String,
+      enum: ["$", "€", "£", "¥", "₹", "C$"],
+      default: "$",
+      required: true,
+    },
+
     amount: { type: Number, required: true },
     durationMonths: { type: Number, required: true },
+
     purpose: { type: String, required: true },
     purposeOther: { type: String, default: "" },
 
@@ -49,32 +60,6 @@ const LoanSchema = new mongoose.Schema(
 );
 
 const LoanModel = mongoose.model("Loan", LoanSchema);
-
-
-// --- Chat model ---
-const MessageSchema = new mongoose.Schema({
-  email: { type: String, required: true },
-
-  sender: {
-    type: String,
-    enum: ["user", "admin"],
-    required: true,
-  },
-
-  text: { type: String, required: true },
-
-  // ✅ MESSAGE STATUS
-  status: {
-    type: String,
-    enum: ["sent", "delivered", "seen"],
-    default: "sent",
-  },
-
-  createdAt: { type: Date, default: Date.now },
-});
-
-const MessageModel = mongoose.model("Message", MessageSchema);
-
 
 
 // ==================== NOTIFICATIONS ====================
@@ -1262,43 +1247,55 @@ app.post("/loans/apply", async (req, res) => {
   try {
     const data = req.body;
 
-    // simple validation (matches your simple form)
     if (!data.email) return res.status(400).json({ error: "Email required" });
     if (!data.fullName) return res.status(400).json({ error: "Full name required" });
     if (!data.phone) return res.status(400).json({ error: "Phone required" });
     if (!data.country) return res.status(400).json({ error: "Country required" });
 
     if (!data.loanType) return res.status(400).json({ error: "Loan type required" });
-    if (!data.amount || Number(data.amount) <= 0)
+
+    const allowedCurrencies = ["$", "€", "£", "¥", "₹", "C$"];
+    if (!data.currency || !allowedCurrencies.includes(data.currency)) {
+      return res.status(400).json({ error: "Valid currency required" });
+    }
+
+    if (!data.amount || Number(data.amount) <= 0) {
       return res.status(400).json({ error: "Valid amount required" });
-    if (!data.durationMonths || Number(data.durationMonths) <= 0)
+    }
+
+    if (!data.durationMonths || Number(data.durationMonths) <= 0) {
       return res.status(400).json({ error: "Valid duration required" });
+    }
+
     if (!data.purpose) return res.status(400).json({ error: "Purpose required" });
 
-    if (!data.employmentStatus)
+    if (!data.employmentStatus) {
       return res.status(400).json({ error: "Employment status required" });
-    if (!data.monthlyIncome || Number(data.monthlyIncome) <= 0)
+    }
+
+    if (!data.monthlyIncome || Number(data.monthlyIncome) <= 0) {
       return res.status(400).json({ error: "Monthly income required" });
+    }
 
     if (!data.idType) return res.status(400).json({ error: "ID type required" });
 
     const loan = await LoanModel.create({
       ...data,
+      currency: data.currency,
       amount: Number(data.amount),
       durationMonths: Number(data.durationMonths),
       monthlyIncome: Number(data.monthlyIncome),
       status: "pending",
     });
 
-    // notify admins realtime (optional)
     io.to("admins").emit("newLoanApplication", loan);
 
-    // notify user
     const n = await NotificationModel.create({
       title: "Loan Application Submitted",
       message: `Your loan request is now pending review.`,
       userEmail: data.email,
     });
+
     io.to(data.email).emit("newNotification", n);
 
     res.status(201).json({ success: true, loan });
@@ -1330,7 +1327,6 @@ app.get("/user/:email/loans", async (req, res) => {
   }
 });
 
-// 4) Admin approve/reject loan
 app.put("/admin/loans/:id/status", async (req, res) => {
   try {
     const { status, adminNote } = req.body;
@@ -1342,9 +1338,41 @@ app.put("/admin/loans/:id/status", async (req, res) => {
     const loan = await LoanModel.findById(req.params.id);
     if (!loan) return res.status(404).json({ error: "Loan not found" });
 
+    // prevent double-crediting if already approved before
+    if (loan.status === "approved" && status === "approved") {
+      return res.status(400).json({ error: "Loan already approved" });
+    }
+
     loan.status = status;
     loan.adminNote = adminNote || "";
     await loan.save();
+
+    // ✅ if approved, deposit loan amount into user's balance
+    if (status === "approved") {
+      const user = await EmployeeeModel.findOne({ email: loan.email });
+
+      if (!user) {
+        return res.status(404).json({ error: "User not found for this loan" });
+      }
+
+      user.balance = Number(user.balance || 0) + Number(loan.amount || 0);
+      await user.save();
+
+      // realtime balance update
+      io.to(user.email).emit("balanceUpdated", { balance: user.balance });
+
+      // optional transaction record
+      const tx = await TransactionModel.create({
+        userId: user._id,
+        type: "credit",
+        amount: Number(loan.amount || 0),
+        description: `${loan.loanType} loan approved`,
+        recipientName: user.name,
+        counterpartyAccount: "LOAN_APPROVAL",
+      });
+
+      io.to(user.email).emit("transactionAdded", tx);
+    }
 
     // realtime notify user
     io.to(loan.email).emit("loanStatusUpdated", {
@@ -1358,10 +1386,11 @@ app.put("/admin/loans/:id/status", async (req, res) => {
       title: status === "approved" ? "Loan Approved" : "Loan Declined",
       message:
         status === "approved"
-          ? "Your loan has been approved."
+          ? `Your loan of ${(loan.currency || "$")}${Number(loan.amount).toLocaleString()} has been approved and credited to your account.`
           : "Your loan has been declined.",
       userEmail: loan.email,
     });
+
     io.to(loan.email).emit("newNotification", n);
 
     // optional: notify admins list updated
@@ -1374,7 +1403,25 @@ app.put("/admin/loans/:id/status", async (req, res) => {
   }
 });
 
+/// 5) Admin delete loan
+app.delete("/admin/loans/:id", async (req, res) => {
+  try {
+    const loan = await LoanModel.findByIdAndDelete(req.params.id);
 
+    if (!loan) {
+      return res.status(404).json({ error: "Loan not found" });
+    }
+
+    // optional realtime update for admin dashboards
+    io.to("admins").emit("loanDeleted", loan._id);
+
+    res.json({ success: true, message: "Loan deleted successfully" });
+
+  } catch (err) {
+    console.error("DELETE LOAN ERROR:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
 
 // Move from MAIN -> SAVINGS
 app.post("/user/:id/savings/deposit", freezeGuardByUserId, async (req, res) => {
@@ -1678,6 +1725,7 @@ app.get("/admin/users/fixed-deposits", async (req, res) => {
         id: user._id,
         name: user.name,
         email: user.email,
+        currency: user.currency || "$",
         totalLocked,
         totalInterest,
         fixedDeposits,
