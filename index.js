@@ -62,6 +62,33 @@ const LoanSchema = new mongoose.Schema(
 const LoanModel = mongoose.model("Loan", LoanSchema);
 
 
+
+// --- Chat model ---
+const MessageSchema = new mongoose.Schema({
+  email: { type: String, required: true },
+
+  sender: {
+    type: String,
+    enum: ["user", "admin"],
+    required: true,
+  },
+
+  text: { type: String, required: true },
+
+  // ✅ MESSAGE STATUS
+  status: {
+    type: String,
+    enum: ["sent", "delivered", "seen"],
+    default: "sent",
+  },
+
+  createdAt: { type: Date, default: Date.now },
+});
+
+const MessageModel = mongoose.model("Message", MessageSchema);
+
+
+
 // ==================== NOTIFICATIONS ====================
 const NotificationSchema = new mongoose.Schema({
   title: { type: String, required: true },
