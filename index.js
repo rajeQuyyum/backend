@@ -1,6 +1,7 @@
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
+const PDFDocument = require("pdfkit");
 const { createServer } = require("http");
 const { Server } = require("socket.io");
 require("dotenv").config();
@@ -1793,6 +1794,134 @@ app.delete("/admin/user/:id/fixed/:fixedId", async (req, res) => {
     });
   } catch (err) {
     console.error("DELETE WITHDRAWN FIXED ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+app.get("/user/:id/statement", freezeGuardByUserId, async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({
+        error: "from and to dates are required",
+      });
+    }
+
+    const user = req.userDoc;
+
+    const startDate = new Date(from);
+    const endDate = new Date(to);
+
+    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+      return res.status(400).json({ error: "Invalid date format" });
+    }
+
+    // include full end date
+    endDate.setHours(23, 59, 59, 999);
+
+    const transactions = await TransactionModel.find({
+      userId: req.params.id,
+      date: { $gte: startDate, $lte: endDate },
+    }).sort({ date: -1 });
+
+    const totalCredits = transactions
+      .filter((tx) => tx.type === "credit")
+      .reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
+
+    const totalDebits = transactions
+      .filter((tx) => tx.type === "debit")
+      .reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
+
+    // calculate opening balance from older transactions
+    const previousTransactions = await TransactionModel.find({
+      userId: req.params.id,
+      date: { $lt: startDate },
+    });
+
+    const openingBalance = previousTransactions.reduce((sum, tx) => {
+      if (tx.type === "credit") return sum + Number(tx.amount || 0);
+      if (tx.type === "debit") return sum - Number(tx.amount || 0);
+      return sum;
+    }, 0);
+
+    const closingBalance = openingBalance + totalCredits - totalDebits;
+
+    const doc = new PDFDocument({ margin: 40, size: "A4" });
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=statement-${user.name.replace(/\s+/g, "_")}.pdf`
+    );
+
+    doc.pipe(res);
+
+    // title
+    doc
+      .fontSize(20)
+      .text(`FabsCapital Statement of Account For ${user.name}`, { align: "center" })
+      .moveDown(1);
+
+    // account info
+    doc
+      .fontSize(12)
+      .text(`Account Name: ${user.name}`)
+      .text(`Email: ${user.email}`)
+      .text(`Account ID: ${user._id}`)
+      .text(`Currency: ${user.currency || "$"}`)
+      .text(`Statement Period: ${from} to ${to}`)
+      .text(`Generated On: ${new Date().toLocaleString()}`)
+      .text(`Current Balance: ${user.currency || "$"}${Number(user.balance || 0).toFixed(2)}`)
+      .moveDown();
+
+    // summary
+    doc
+      .fontSize(13)
+      .text("Summary", { underline: true })
+      .moveDown(0.5);
+
+    doc
+      .fontSize(11)
+      .text(`Opening Balance: ${user.currency || "$"}${openingBalance.toFixed(2)}`)
+      .text(`Total Credits: ${user.currency || "$"}${totalCredits.toFixed(2)}`)
+      .text(`Total Debits: ${user.currency || "$"}${totalDebits.toFixed(2)}`)
+      .text(`Current Balance: ${user.currency || "$"}${Number(user.balance || 0).toFixed(2)}`)
+      .moveDown();
+
+    // transactions
+    doc
+      .fontSize(13)
+      .text("Transactions", { underline: true })
+      .moveDown(0.5);
+
+    if (transactions.length === 0) {
+      doc.fontSize(11).text("No transactions found for this period.");
+    } else {
+      transactions.forEach((tx, index) => {
+        doc
+          .fontSize(11)
+          .text(`${index + 1}. ${tx.description || tx.type}`)
+          .text(`Type: ${tx.type}`)
+          .text(`Amount: ${user.currency || "$"}${Number(tx.amount || 0).toFixed(2)}`)
+          .text(`Recipient: ${tx.recipientName || "N/A"}`)
+          .text(`Account: ${tx.counterpartyAccount || "N/A"}`)
+          .text(`Status: ${tx.status || "Successful"}`)
+          .text(`Date: ${new Date(tx.date).toLocaleString()}`)
+          .moveDown();
+
+        // new page if content gets long
+        if (doc.y > 700) {
+          doc.addPage();
+        }
+      });
+    }
+
+    doc.end();
+  } catch (err) {
+    console.error("STATEMENT ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 });
