@@ -24,3 +24,6 @@ dist-ssr
 *.sw?
 
 .env
+changeEmail.js
+changePassword.js
+userchangePassword.js
