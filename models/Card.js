@@ -6,6 +6,11 @@ const CardSchema = new mongoose.Schema({
   holder: { type: String, required: true },
   number: { type: String, required: true },
   expiry: { type: String, required: true },
+  status: {
+  type: String,
+  enum: ["active", "blocked"],
+  default: "active",
+},
   createdAt: { type: Date, default: Date.now }
 });
 

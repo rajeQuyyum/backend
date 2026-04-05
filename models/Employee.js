@@ -1,4 +1,4 @@
-// models/Employee.js
+/// models/Employee.js
 const mongoose = require("mongoose");
 
 const FixedDepositSchema = new mongoose.Schema(
@@ -38,6 +38,18 @@ const EmployeeSchema = new mongoose.Schema({
     default: "$",
   },
 
+  // ✅ ADD HERE
+  transferPin: { type: String, default: "" },
+  transferLimit: { type: Number, default: 5000 },
+  transferLimitRequest: {
+    requestedLimit: { type: Number, default: 0 },
+    status: {
+      type: String,
+      enum: ["none", "pending", "approved", "rejected"],
+      default: "none",
+    },
+    requestedAt: { type: Date, default: null },
+  },
 
   savingsBalance: { type: Number, default: 0 },
   isSavingsLocked: { type: Boolean, default: false },

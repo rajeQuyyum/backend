@@ -215,8 +215,30 @@ app.post("/login", async (req, res) => {
       balance: user.balance,
       isFrozen: user.isFrozen, // ✅ ADD THIS
        currency: user.currency, // ✅ add this
+       transferLimit: user.transferLimit,
+        hasTransferPin: !!user.transferPin,
     },
   });
+});
+
+app.put("/user/:id/change-password", async (req, res) => {
+  try {
+    const { oldPassword, newPassword } = req.body;
+
+    const user = await EmployeeeModel.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    if (user.password !== oldPassword) {
+      return res.status(400).json({ error: "Old password is incorrect" });
+    }
+
+    user.password = newPassword;
+    await user.save();
+
+    res.json({ success: true, message: "Password changed successfully" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/register", async (req, res) => {
@@ -582,6 +604,374 @@ app.delete("/admin/transaction/:id", async (req, res) => {
     // ⚡ NEW: Notify user
     io.to(user.email).emit("transactionDeleted", tx._id);
     io.to(user.email).emit("balanceUpdated", { balance: user.balance });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+app.post("/user/:id/create-transfer-pin", async (req, res) => {
+  try {
+    const { pin } = req.body;
+
+    if (!pin || !/^\d{4}$/.test(pin)) {
+      return res.status(400).json({ error: "PIN must be exactly 4 digits" });
+    }
+
+    const user = await EmployeeeModel.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    if (user.transferPin) {
+      return res.status(400).json({ error: "Transfer PIN already exists" });
+    }
+
+    user.transferPin = pin;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: "Transfer PIN created successfully",
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.put("/user/:id/change-transfer-pin", async (req, res) => {
+  try {
+    const { oldPin, newPin } = req.body;
+
+    if (!newPin || !/^\d{4}$/.test(newPin)) {
+      return res.status(400).json({ error: "New PIN must be exactly 4 digits" });
+    }
+
+    const user = await EmployeeeModel.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    if (!user.transferPin) {
+      return res.status(400).json({ error: "No transfer PIN found. Create one first." });
+    }
+
+    if (user.transferPin !== oldPin) {
+      return res.status(400).json({ error: "Old PIN is incorrect" });
+    }
+
+    user.transferPin = newPin;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: "Transfer PIN changed successfully",
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.get("/user/:id/transfer-settings", async (req, res) => {
+  try {
+    const user = await EmployeeeModel.findById(req.params.id).select(
+      "transferLimit transferPin transferLimitRequest currency"
+    );
+
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    res.json({
+      transferLimit: user.transferLimit || 0,
+      hasTransferPin: !!user.transferPin,
+      transferLimitRequest: user.transferLimitRequest || {
+        requestedLimit: 0,
+        status: "none",
+        requestedAt: null,
+      },
+      currency: user.currency || "$",
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.post("/user/:id/request-transfer-limit", async (req, res) => {
+  try {
+    const { requestedLimit } = req.body;
+    const newLimit = Number(requestedLimit);
+
+    if (!newLimit || newLimit <= 0) {
+      return res.status(400).json({ error: "Enter a valid transfer limit" });
+    }
+
+    const user = await EmployeeeModel.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    if (newLimit <= Number(user.transferLimit || 0)) {
+      return res.status(400).json({
+        error: "Requested limit must be greater than current limit",
+      });
+    }
+
+    user.transferLimitRequest = {
+      requestedLimit: newLimit,
+      status: "pending",
+      requestedAt: new Date(),
+    };
+
+    await user.save();
+
+    io.to("admins").emit("transferLimitRequestCreated", {
+      userId: user._id,
+      name: user.name,
+      email: user.email,
+      requestedLimit: newLimit,
+      currency: user.currency || "$",
+    });
+
+    res.json({
+      success: true,
+      message: "Transfer limit request submitted successfully",
+      transferLimitRequest: user.transferLimitRequest,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.put("/admin/user/:id/transfer-limit", async (req, res) => {
+  try {
+    const { action } = req.body; // "approve" or "reject"
+
+    const user = await EmployeeeModel.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    if (!user.transferLimitRequest || user.transferLimitRequest.status !== "pending") {
+      return res.status(400).json({ error: "No pending transfer limit request" });
+    }
+
+    if (action === "approve") {
+      user.transferLimit = Number(user.transferLimitRequest.requestedLimit || user.transferLimit);
+      user.transferLimitRequest.status = "approved";
+    } else if (action === "reject") {
+      user.transferLimitRequest.status = "rejected";
+    } else {
+      return res.status(400).json({ error: "Action must be approve or reject" });
+    }
+
+    await user.save();
+
+    io.to(user.email).emit("transferLimitUpdated", {
+      transferLimit: user.transferLimit,
+      transferLimitRequest: user.transferLimitRequest,
+    });
+
+    res.json({
+      success: true,
+      transferLimit: user.transferLimit,
+      transferLimitRequest: user.transferLimitRequest,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.put("/user/:userId/cards/:cardId/block", async (req, res) => {
+  try {
+    const card = await CardModel.findOne({
+      _id: req.params.cardId,
+      userId: req.params.userId,
+    });
+
+    if (!card) return res.status(404).json({ error: "Card not found" });
+
+    card.status = "blocked";
+    await card.save();
+
+    res.json({
+      success: true,
+      message: "Card blocked successfully",
+      card,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.put("/user/:userId/cards/:cardId/activate", async (req, res) => {
+  try {
+    const card = await CardModel.findOne({
+      _id: req.params.cardId,
+      userId: req.params.userId,
+    });
+
+    if (!card) return res.status(404).json({ error: "Card not found" });
+
+    card.status = "active";
+    await card.save();
+
+    res.json({
+      success: true,
+      message: "Card activated successfully",
+      card,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.post("/user/:id/transfer", freezeGuardByUserId, async (req, res) => {
+  try {
+    const { pin, amount, description, recipientName, counterpartyAccount } = req.body;
+
+    const user = req.userDoc;
+    const amt = Number(amount);
+
+    if (!recipientName || !counterpartyAccount || !amt) {
+      return res.status(400).json({ error: "Recipient name, account and amount are required" });
+    }
+
+    if (amt <= 0) {
+      return res.status(400).json({ error: "Enter a valid amount" });
+    }
+
+    if (!user.transferPin) {
+      return res.status(400).json({ error: "No transfer PIN found. Create one in settings." });
+    }
+
+    if (!pin) {
+      return res.status(400).json({ error: "Transfer PIN is required" });
+    }
+
+    if (user.transferPin !== pin) {
+      return res.status(400).json({ error: "Invalid transfer PIN" });
+    }
+
+    if (amt > Number(user.balance || 0)) {
+      return res.status(400).json({ error: "Insufficient balance" });
+    }
+
+    if (amt > Number(user.transferLimit || 0)) {
+      return res.status(400).json({
+        error: `Transfer exceeds your limit of ${user.currency || "$"}${Number(user.transferLimit || 0).toFixed(2)}`,
+      });
+    }
+
+    const tx = await TransactionModel.create({
+      userId: user._id,
+      type: "debit",
+      amount: amt,
+      description,
+      recipientName,
+      counterpartyAccount,
+    });
+
+    user.balance = Number(user.balance || 0) - amt;
+    await user.save();
+
+    io.to(user.email).emit("transactionAdded", tx);
+    io.to(user.email).emit("balanceUpdated", { balance: user.balance });
+
+    res.json(tx);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.put("/admin/user/:id/clear-transfer-pin", async (req, res) => {
+  try {
+    const user = await EmployeeeModel.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    user.transferPin = "";
+    await user.save();
+
+    const notification = await NotificationModel.create({
+      title: "Transfer PIN Reset",
+      message: "Your transfer PIN has been cleared by admin. Please create a new transfer PIN in settings.",
+      userEmail: user.email,
+    });
+
+    io.to(user.email).emit("transferPinCleared");
+    io.to(user.email).emit("newNotification", notification);
+
+    res.json({
+      success: true,
+      message: "Transfer PIN cleared successfully",
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.put("/admin/user/:id/reset-transfer-limit", async (req, res) => {
+  try {
+    const DEFAULT_TRANSFER_LIMIT = 5000;
+
+    const user = await EmployeeeModel.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    user.transferLimit = DEFAULT_TRANSFER_LIMIT;
+    user.transferLimitRequest = {
+      requestedLimit: 0,
+      status: "none",
+      requestedAt: null,
+    };
+
+    await user.save();
+
+    const notification = await NotificationModel.create({
+      title: "Transfer Limit Reset",
+      message: `Your transfer limit has been reset by admin to ${user.currency || "$"}${Number(DEFAULT_TRANSFER_LIMIT).toFixed(2)}.`,
+      userEmail: user.email,
+    });
+
+    io.to(user.email).emit("transferLimitUpdated", {
+      transferLimit: user.transferLimit,
+      transferLimitRequest: user.transferLimitRequest,
+    });
+
+    io.to(user.email).emit("newNotification", notification);
+
+    res.json({
+      success: true,
+      message: "Transfer limit reset successfully",
+      transferLimit: user.transferLimit,
+      transferLimitRequest: user.transferLimitRequest,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.get("/user/:id/transfer-settings", async (req, res) => {
+  try {
+    const user = await EmployeeeModel.findById(req.params.id).select(
+      "transferLimit transferPin transferLimitRequest currency isFrozen isBlocked isSavingsLocked"
+    );
+
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    res.json({
+      transferLimit: user.transferLimit || 0,
+      hasTransferPin: !!user.transferPin,
+      transferLimitRequest: user.transferLimitRequest || {
+        requestedLimit: 0,
+        status: "none",
+        requestedAt: null,
+      },
+      currency: user.currency || "$",
+      isFrozen: !!user.isFrozen,
+      isBlocked: !!user.isBlocked,
+      isSavingsLocked: !!user.isSavingsLocked,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
