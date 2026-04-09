@@ -2317,6 +2317,238 @@ app.get("/user/:id/statement", freezeGuardByUserId, async (req, res) => {
 });
 
 
+/// ==================== FACE VERIFICATION MODEL ====================
+const FaceVerificationSchema = new mongoose.Schema(
+  {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      required: true,
+    },
+    email: { type: String, required: true },
+
+    selfieUrl: { type: String, required: true },
+    selfiePublicId: { type: String, required: true },
+
+    status: {
+      type: String,
+      enum: ["pending", "verified", "rejected"],
+      default: "pending",
+    },
+
+    adminNote: { type: String, default: "" },
+    verifiedAt: { type: Date, default: null },
+  },
+  { timestamps: true }
+);
+
+const FaceVerificationModel = mongoose.model(
+  "FaceVerification",
+  FaceVerificationSchema
+);
+
+
+// ==================== FACE VERIFICATION ROUTES ====================
+
+// User submits selfie for verification
+app.post(
+  "/user/:id/face-verification",
+  upload.single("selfie"),
+  async (req, res) => {
+    try {
+      const user = await EmployeeeModel.findById(req.params.id);
+      if (!user) return res.status(404).json({ error: "User not found" });
+
+      if (!req.file) {
+        return res.status(400).json({ error: "Selfie image is required" });
+      }
+
+      let verification = await FaceVerificationModel.findOne({
+        userId: user._id,
+      });
+
+      // delete previous uploaded selfie if replacing
+      if (verification?.selfiePublicId) {
+        await cloudinary.uploader.destroy(verification.selfiePublicId);
+      }
+
+      if (verification) {
+        verification.selfieUrl = req.file.path;
+        verification.selfiePublicId = req.file.filename;
+        verification.status = "pending";
+        verification.adminNote = "";
+        verification.verifiedAt = null;
+        await verification.save();
+      } else {
+        verification = await FaceVerificationModel.create({
+          userId: user._id,
+          email: user.email,
+          selfieUrl: req.file.path,
+          selfiePublicId: req.file.filename,
+          status: "pending",
+        });
+      }
+
+      // notify admins
+      io.to("admins").emit("newFaceVerification", {
+        verificationId: verification._id,
+        userId: user._id,
+        name: user.name,
+        email: user.email,
+        selfieUrl: verification.selfieUrl,
+        status: verification.status,
+        createdAt: verification.createdAt,
+      });
+
+      // user notification
+      const notification = await NotificationModel.create({
+        title: "Face Verification Submitted",
+        message:
+          "Your face verification has been submitted and is pending admin review.",
+        userEmail: user.email,
+      });
+
+      io.to(user.email).emit("newNotification", notification);
+      io.to(user.email).emit("faceVerificationUpdated", verification);
+
+      res.json({
+        success: true,
+        message: "Face verification submitted successfully",
+        verification,
+      });
+    } catch (err) {
+      console.error("FACE VERIFICATION SUBMIT ERROR:", err);
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+
+// User gets their own face verification
+app.get("/user/:id/face-verification", async (req, res) => {
+  try {
+    const verification = await FaceVerificationModel.findOne({
+      userId: req.params.id,
+    }).sort({ createdAt: -1 });
+
+    res.json(verification || null);
+  } catch (err) {
+    console.error("GET USER FACE VERIFICATION ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// Admin gets all face verifications
+app.get("/admin/face-verifications", async (req, res) => {
+  try {
+    const verifications = await FaceVerificationModel.find().sort({ createdAt: -1 });
+
+    const formatted = await Promise.all(
+      verifications.map(async (item) => {
+        const user = await EmployeeeModel.findById(item.userId).select("name email");
+
+        return {
+          _id: item._id,
+          userId: item.userId,
+          name: user?.name || "",
+          email: user?.email || item.email,
+          selfieUrl: item.selfieUrl,
+          status: item.status,
+          adminNote: item.adminNote,
+          verifiedAt: item.verifiedAt,
+          createdAt: item.createdAt,
+          updatedAt: item.updatedAt,
+        };
+      })
+    );
+
+    res.json(formatted);
+  } catch (err) {
+    console.error("GET ADMIN FACE VERIFICATIONS ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// Admin approves or rejects face verification
+app.put("/admin/face-verification/:id/status", async (req, res) => {
+  try {
+    const { status, adminNote } = req.body;
+
+    if (!["verified", "rejected"].includes(status)) {
+      return res
+        .status(400)
+        .json({ error: "Status must be verified or rejected" });
+    }
+
+    const verification = await FaceVerificationModel.findById(req.params.id);
+    if (!verification) {
+      return res.status(404).json({ error: "Face verification not found" });
+    }
+
+    verification.status = status;
+    verification.adminNote = adminNote || "";
+    verification.verifiedAt = status === "verified" ? new Date() : null;
+
+    await verification.save();
+
+    const notification = await NotificationModel.create({
+      title:
+        status === "verified"
+          ? "Face Verification Approved"
+          : "Face Verification Rejected",
+      message:
+        status === "verified"
+          ? "Your face verification has been approved."
+          : verification.adminNote
+          ? `Your face verification was rejected: ${verification.adminNote}`
+          : "Your face verification was rejected.",
+      userEmail: verification.email,
+    });
+
+    io.to(verification.email).emit("newNotification", notification);
+    io.to(verification.email).emit("faceVerificationUpdated", verification);
+    io.to("admins").emit("faceVerificationReviewed", verification);
+
+    res.json({
+      success: true,
+      message: `Face verification ${status} successfully`,
+      verification,
+    });
+  } catch (err) {
+    console.error("UPDATE FACE VERIFICATION STATUS ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// Admin deletes face verification completely
+app.delete("/admin/face-verification/:id", async (req, res) => {
+  try {
+    const verification = await FaceVerificationModel.findById(req.params.id);
+    if (!verification) {
+      return res.status(404).json({ error: "Face verification not found" });
+    }
+
+    if (verification.selfiePublicId) {
+      await cloudinary.uploader.destroy(verification.selfiePublicId);
+    }
+
+    await FaceVerificationModel.findByIdAndDelete(req.params.id);
+
+    io.to(verification.email).emit("faceVerificationDeleted");
+    io.to("admins").emit("faceVerificationDeletedByAdmin", req.params.id);
+
+    res.json({
+      success: true,
+      message: "Face verification deleted successfully",
+    });
+  } catch (err) {
+    console.error("DELETE FACE VERIFICATION ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 
 
