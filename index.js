@@ -2329,6 +2329,13 @@ const FaceVerificationSchema = new mongoose.Schema(
     selfieUrl: { type: String, required: true },
     selfiePublicId: { type: String, required: true },
 
+     // ✅ ADD THIS
+    selfieUrl: { type: String, default: "" },
+selfiePublicId: { type: String, default: "" },
+
+signatureUrl: { type: String, default: "" },
+signaturePublicId: { type: String, default: "" },
+
     status: {
       type: String,
       enum: ["pending", "verified", "rejected"],
@@ -2352,58 +2359,84 @@ const FaceVerificationModel = mongoose.model(
 // User submits selfie for verification
 app.post(
   "/user/:id/face-verification",
-  upload.single("selfie"),
+  upload.fields([
+    { name: "selfie", maxCount: 1 },
+    { name: "signature", maxCount: 1 },
+  ]),
   async (req, res) => {
     try {
       const user = await EmployeeeModel.findById(req.params.id);
       if (!user) return res.status(404).json({ error: "User not found" });
 
-      if (!req.file) {
-        return res.status(400).json({ error: "Selfie image is required" });
-      }
+      const selfieFile = req.files?.selfie?.[0];
+      const signatureFile = req.files?.signature?.[0];
+
+      if (!selfieFile && !signatureFile) {
+  return res.status(400).json({
+    error: "Provide at least a selfie or signature",
+  });
+}
 
       let verification = await FaceVerificationModel.findOne({
         userId: user._id,
       });
 
-      // delete previous uploaded selfie if replacing
-      if (verification?.selfiePublicId) {
-        await cloudinary.uploader.destroy(verification.selfiePublicId);
-      }
+      // 🧹 delete old images
+      // 🧹 delete only what is being replaced
+if (selfieFile && verification?.selfiePublicId) {
+  await cloudinary.uploader.destroy(verification.selfiePublicId);
+}
+
+if (signatureFile && verification?.signaturePublicId) {
+  await cloudinary.uploader.destroy(verification.signaturePublicId);
+}
 
       if (verification) {
-        verification.selfieUrl = req.file.path;
-        verification.selfiePublicId = req.file.filename;
-        verification.status = "pending";
-        verification.adminNote = "";
-        verification.verifiedAt = null;
-        await verification.save();
-      } else {
-        verification = await FaceVerificationModel.create({
-          userId: user._id,
-          email: user.email,
-          selfieUrl: req.file.path,
-          selfiePublicId: req.file.filename,
-          status: "pending",
-        });
+  if (selfieFile) {
+    verification.selfieUrl = selfieFile.path;
+    verification.selfiePublicId = selfieFile.filename;
+  }
+
+  if (signatureFile) {
+    verification.signatureUrl = signatureFile.path;
+    verification.signaturePublicId = signatureFile.filename;
+  }
+
+  verification.status = "pending";
+  verification.adminNote = "";
+  verification.verifiedAt = null;
+
+  await verification.save();
+} else {
+       verification = await FaceVerificationModel.create({
+  userId: user._id,
+  email: user.email,
+
+  selfieUrl: selfieFile?.path || "",
+  selfiePublicId: selfieFile?.filename || "",
+
+  signatureUrl: signatureFile?.path || "",
+  signaturePublicId: signatureFile?.filename || "",
+
+  status: "pending",
+});
       }
 
-      // notify admins
+      // 🔔 notify admins (ADD signature)
       io.to("admins").emit("newFaceVerification", {
         verificationId: verification._id,
         userId: user._id,
         name: user.name,
         email: user.email,
         selfieUrl: verification.selfieUrl,
+        signatureUrl: verification.signatureUrl, // ✅ ADD THIS
         status: verification.status,
         createdAt: verification.createdAt,
       });
 
-      // user notification
       const notification = await NotificationModel.create({
         title: "Face Verification Submitted",
-        message:
-          "Your face verification has been submitted and is pending admin review.",
+        message: "Your verification is pending admin review.",
         userEmail: user.email,
       });
 
@@ -2412,16 +2445,13 @@ app.post(
 
       res.json({
         success: true,
-        message: "Face verification submitted successfully",
         verification,
       });
     } catch (err) {
-      console.error("FACE VERIFICATION SUBMIT ERROR:", err);
       res.status(500).json({ error: err.message });
     }
   }
 );
-
 
 // User gets their own face verification
 app.get("/user/:id/face-verification", async (req, res) => {
@@ -2453,6 +2483,7 @@ app.get("/admin/face-verifications", async (req, res) => {
           name: user?.name || "",
           email: user?.email || item.email,
           selfieUrl: item.selfieUrl,
+          signatureUrl: item.signatureUrl, // ✅ ADD THIS
           status: item.status,
           adminNote: item.adminNote,
           verifiedAt: item.verifiedAt,
@@ -2495,14 +2526,14 @@ app.put("/admin/face-verification/:id/status", async (req, res) => {
     const notification = await NotificationModel.create({
       title:
         status === "verified"
-          ? "Face Verification Approved"
-          : "Face Verification Rejected",
+          ? "Face Verification and signature Approved"
+          : "Face Verification and signature Rejected",
       message:
         status === "verified"
-          ? "Your face verification has been approved."
+          ? "Your face verification and signature has been approved."
           : verification.adminNote
-          ? `Your face verification was rejected: ${verification.adminNote}`
-          : "Your face verification was rejected.",
+          ? `Your face verification and signature was rejected: ${verification.adminNote}`
+          : "Your face verification and signature was rejected.",
       userEmail: verification.email,
     });
 
@@ -2545,6 +2576,78 @@ app.delete("/admin/face-verification/:id", async (req, res) => {
     });
   } catch (err) {
     console.error("DELETE FACE VERIFICATION ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+// DELETE ONLY SIGNATURE
+app.delete("/admin/face-verification/:id/signature", async (req, res) => {
+  try {
+    const verification = await FaceVerificationModel.findById(req.params.id);
+
+    if (!verification) {
+      return res.status(404).json({ error: "Not found" });
+    }
+
+    // delete from cloudinary
+    if (verification.signaturePublicId) {
+      await cloudinary.uploader.destroy(verification.signaturePublicId);
+    }
+
+    // remove only signature
+    verification.signatureUrl = "";
+    verification.signaturePublicId = "";
+
+    await verification.save();
+
+    // notify user + admin
+    io.to(verification.email).emit("faceVerificationUpdated", verification);
+    io.to("admins").emit("faceVerificationReviewed", verification);
+
+    res.json({
+      success: true,
+      message: "Signature deleted successfully",
+      verification,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+// APPROVE ONLY SIGNATURE
+app.put("/admin/face-verification/:id/signature/approve", async (req, res) => {
+  try {
+    const verification = await FaceVerificationModel.findById(req.params.id);
+
+    if (!verification) {
+      return res.status(404).json({ error: "Not found" });
+    }
+
+    if (!verification.signatureUrl) {
+      return res.status(400).json({ error: "No signature to approve" });
+    }
+
+    // mark as verified (you can customize this logic)
+    verification.status = "verified";
+    verification.verifiedAt = new Date();
+    verification.adminNote = "Signature verified";
+
+    await verification.save();
+
+    // notify user + admin
+    io.to(verification.email).emit("faceVerificationUpdated", verification);
+    io.to("admins").emit("faceVerificationReviewed", verification);
+
+    res.json({
+      success: true,
+      message: "Signature approved",
+      verification,
+    });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
