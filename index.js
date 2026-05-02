@@ -319,19 +319,23 @@ app.put("/admin/user/:id/approve", async (req, res) => {
 
     if (!user) return res.status(404).json({ error: "User not found" });
 
-    // ✅ SEND EMAIL
-    await transporter.sendMail({
-  from: process.env.EMAIL_USER,
-  to: user.email,
-  subject: "Account Approved 🎉",
-  html: `
-    <h2>Hello ${user.name}</h2>
-    <h1>Welcome to fabscapital</h1>
-    <p>You can now login. fabscapital.com </p>
-  `,
-});
-
+    // ✅ 1. Respond immediately (VERY IMPORTANT)
     res.json({ success: true });
+
+    // ✅ 2. Send email in background (NO await)
+    transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: user.email,
+      subject: "Account Approved 🎉",
+      html: `
+        <h2>Hello ${user.name}</h2>
+        <h1>Welcome to fabscapital</h1>
+        <p>You can now login. fabscapital.com</p>
+      `,
+    })
+    .then(() => console.log("✅ Email sent"))
+    .catch((err) => console.log("❌ Email error:", err));
+
   } catch (err) {
     console.log(err);
     res.status(500).json({ error: err.message });
