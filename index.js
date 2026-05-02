@@ -317,12 +317,14 @@ app.put("/admin/user/:id/approve", async (req, res) => {
       { new: true }
     );
 
-    if (!user) return res.status(404).json({ error: "User not found" });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
 
-    // ✅ 1. Respond immediately (VERY IMPORTANT)
+    // ✅ Respond immediately (IMPORTANT)
     res.json({ success: true });
 
-    // ✅ 2. Send email in background (NO await)
+    // ✅ Send email in background (no await)
     transporter.sendMail({
       from: process.env.EMAIL_USER,
       to: user.email,
@@ -330,7 +332,7 @@ app.put("/admin/user/:id/approve", async (req, res) => {
       html: `
         <h2>Hello ${user.name}</h2>
         <h1>Welcome to fabscapital</h1>
-        <p>You can now login. fabscapital.com</p>
+        <p>You can now login: fabscapital.com</p>
       `,
     })
     .then(() => console.log("✅ Email sent"))
