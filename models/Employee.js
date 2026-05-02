@@ -32,6 +32,11 @@ const EmployeeSchema = new mongoose.Schema({
   isBlocked: { type: Boolean, default: false },
   isFrozen: { type: Boolean, default: false },
 
+   isApproved: {
+    type: Boolean,
+    default: false,
+  },
+
   currency: {
     type: String,
     enum: ["$", "€", "£", "¥", "₹", "C$"],

@@ -6,6 +6,7 @@ const { createServer } = require("http");
 const { Server } = require("socket.io");
 require("dotenv").config();
 const { cloudinary, upload } = require("./config/cloudinary");
+const nodemailer = require("nodemailer");
 
 const EmployeeeModel = require("./models/Employee");
 const AdminModel = require("./models/Admin");
@@ -14,7 +15,13 @@ const CardModel = require("./models/Card");
 const UserProfileImage = require("./models/UserProfileImage");
 
 
-
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+});
 
 /// ==================== LOANS MODEL ====================
 const LoanSchema = new mongoose.Schema(
@@ -191,35 +198,54 @@ io.on("connection", (socket) => {
 // ==================== AUTH & USER MANAGEMENT ====================
 
 app.post("/login", async (req, res) => {
-  const { email, password } = req.body;
+  try {
+    const { email, password } = req.body;
 
-  const user = await EmployeeeModel.findOne({ email });
-  if (!user) return res.json("User not found");
+    const user = await EmployeeeModel.findOne({ email });
+    if (!user) return res.json("User not found");
 
-  // 🚫 BLOCK CHECK
-  if (user.isBlocked) {
-    return res.status(403).json({
-      status: "blocked",
-      message: "Your account has been blocked. Please contact support.",
-    });
-  }
+    // 🚫 BLOCK CHECK
+    if (user.isBlocked) {
+      return res.status(403).json({
+        status: "blocked",
+        message: "Your account has been blocked. Please contact support.",
+      });
+    }
 
-  if (user.password !== password) return res.json("Incorrect password");
+    // 🔐 PASSWORD CHECK FIRST
+    if (user.password !== password) {
+      return res.json("Incorrect password");
+    }
 
-  res.json({
-    status: "success",
-    user: {
-      id: user._id,
-      name: user.name,
-      email: user.email,
-      balance: user.balance,
-      isFrozen: user.isFrozen, // ✅ ADD THIS
-       currency: user.currency, // ✅ add this
-       transferLimit: user.transferLimit,
+    // 🔥 APPROVAL CHECK AFTER PASSWORD
+    if (!user.isApproved) {
+      return res.status(403).json({
+        status: "pending",
+        message: "Your account is waiting for admin approval",
+      });
+    }
+
+    // ✅ SUCCESS
+    res.json({
+      status: "success",
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        balance: user.balance,
+        isFrozen: user.isFrozen,
+        currency: user.currency,
+        transferLimit: user.transferLimit,
         hasTransferPin: !!user.transferPin,
-    },
-  });
+      },
+    });
+
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: "Server error" });
+  }
 });
+
 
 app.put("/user/:id/change-password", async (req, res) => {
   try {
@@ -243,10 +269,30 @@ app.put("/user/:id/change-password", async (req, res) => {
 
 app.post("/register", async (req, res) => {
   try {
-    const employee = await EmployeeeModel.create(req.body);
-    res.json(employee);
+    const { name, email, password } = req.body;
+
+    // 🔒 check if user already exists
+    const existingUser = await EmployeeeModel.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({
+        message: "User already exists",
+      });
+    }
+
+    // ✅ create user as NOT approved
+    const employee = await EmployeeeModel.create({
+      name,
+      email,
+      password,
+      isApproved: false, // 🔥 IMPORTANT
+    });
+
+    res.json({
+      status: "success",
+      message: "Registration successful. Waiting for admin approval.",
+    });
   } catch (err) {
-    res.json(err);
+    res.status(500).json(err);
   }
 });
 
@@ -259,6 +305,37 @@ app.post("/admin/login", async (req, res) => {
     status: "success",
     admin: { id: admin._id, username: admin.username },
   });
+});
+
+
+
+app.put("/admin/user/:id/approve", async (req, res) => {
+  try {
+    const user = await EmployeeeModel.findByIdAndUpdate(
+      req.params.id,
+      { isApproved: true },
+      { new: true }
+    );
+
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    // ✅ SEND EMAIL
+    await transporter.sendMail({
+  from: process.env.EMAIL_USER,
+  to: user.email,
+  subject: "Account Approved 🎉",
+  html: `
+    <h2>Hello ${user.name}</h2>
+    <h1>Welcome to fabscapital</h1>
+    <p>You can now login. fabscapital.com </p>
+  `,
+});
+
+    res.json({ success: true });
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get("/admin/users", async (req, res) => {
