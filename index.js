@@ -13,6 +13,7 @@ const AdminModel = require("./models/Admin");
 const TransactionModel = require("./models/Transaction");
 const CardModel = require("./models/Card");
 const UserProfileImage = require("./models/UserProfileImage");
+const ContactModel = require("./models/Contact");
 
 
 const transporter = nodemailer.createTransport({
@@ -2761,6 +2762,36 @@ app.put("/admin/face-verification/:id/signature/approve", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+
+app.post("/contact", async (req, res) => {
+  try {
+    const { name, email, message } = req.body;
+
+    const newMessage = new ContactModel({
+      name,
+      email,
+      message,
+    });
+
+    await newMessage.save();
+
+    res.json({ success: true });
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ success: false });
+  }
+});
+
+app.get("/admin/messages", async (req, res) => {
+  try {
+    const messages = await ContactModel.find().sort({ createdAt: -1 });
+    res.json(messages);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 
 
