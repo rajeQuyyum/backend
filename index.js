@@ -321,28 +321,55 @@ app.put("/admin/user/:id/approve", async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    // ✅ Respond immediately (IMPORTANT)
+    // ✅ Respond immediately
     res.json({ success: true });
 
-    // ✅ Send email in background (no await)
-    transporter.sendMail({
-      from: process.env.EMAIL_USER,
+    // ✅ Email config (clean + no-reply style)
+    const mailOptions = {
+      from: `"Fabscapital" <${process.env.EMAIL_USER}>`, // masked sender
       to: user.email,
+
+      // 👇 TRUE no-reply behavior
+      replyTo: "no-reply@fabscapital.com", // must exist ideally
+
       subject: "Account Approved 🎉",
+
       html: `
-        <h2>Hello ${user.name}</h2>
-        <h1>Welcome to fabscapital</h1>
-        <p>You can now login: fabscapital.com</p>
+        <div style="font-family: Arial, sans-serif;">
+          <h2>Hello ${user.name},</h2>
+
+          <h1 style="color:#2c3e50;">Welcome to Fabscapital 🎉</h1>
+
+          <p>Your account has been successfully approved.</p>
+
+          <p>
+            You can now log in and start using your account:
+            <br/>
+            <a href="https://fabscapital.com" style="color:#3498db;">
+              fabscapital.com
+            </a>
+          </p>
+
+          <hr/>
+
+          <p style="color:gray; font-size:12px;">
+            This is an automated message. Please do not reply to this email.
+          </p>
+        </div>
       `,
-    })
-    .then(() => console.log("✅ Email sent"))
-    .catch((err) => console.log("❌ Email error:", err));
+    };
+
+    // ✅ Send email safely in background
+    transporter.sendMail(mailOptions)
+      .then(() => console.log("✅ Email sent to:", user.email))
+      .catch((err) => console.error("❌ Email error:", err.message));
 
   } catch (err) {
-    console.log(err);
-    res.status(500).json({ error: err.message });
+    console.error("❌ Server error:", err.message);
+    res.status(500).json({ error: "Something went wrong" }); // don't leak raw errors
   }
 });
+
 
 app.get("/admin/users", async (req, res) => {
   try {
