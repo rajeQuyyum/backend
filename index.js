@@ -1372,6 +1372,22 @@ app.delete("/admin/notifications/:id", async (req, res) => {
 });
 
 
+// 🔹 Delete ALL notifications
+app.delete("/admin/notifications", async (req, res) => {
+  try {
+    await NotificationModel.deleteMany({});
+
+    // optional: notify frontend (like your single delete)
+    io.emit("allNotificationsDeleted");
+
+    res.json({ success: true, message: "All notifications deleted successfully" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
 
 
 // ==================== ADDITIONAL INFO MODEL ====================
