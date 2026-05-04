@@ -2809,6 +2809,23 @@ app.get("/admin/messages", async (req, res) => {
 });
 
 
+app.use(express.json());
+
+app.post("/admin/messages/delete-many", async (req, res) => {
+  try {
+    const { ids } = req.body;
+
+    await ContactModel.deleteMany({
+      _id: { $in: ids },
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ success: false });
+  }
+});
+
 
 
 
